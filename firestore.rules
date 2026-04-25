@@ -1,0 +1,152 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - Firebase Auth UID
+    //   - email: string (required)
+    //   - role: string (required) - 'client' or 'admin'
+    //
+    // Collection: users/{userId}/trades
+    // Document ID: {tradeId}
+    // Fields:
+    //   - userId: string (required) - must match {userId} and auth.uid
+    //   - symbol: string (required) - max 20 chars
+    //   - type: string (required) - 'Buy' or 'Sell'
+    //   - quantity: number (required)
+    //   - price: number (required)
+    //   - date: string (required)
+    //   - status: string (required) - 'Open' or 'Closed'
+    //   - closePrice: number (optional)
+    //   - closeDate: string (optional)
+    //   - requiredCapital: number (required)
+    //   - peakCapital: number (required)
+    //
+    // Collection: users/{userId}/positions
+    // Document ID: {positionId}
+    // Fields:
+    //   - userId: string (required)
+    //   - symbol: string (required)
+    //   - quantity: number (required)
+    //   - averagePrice: number (required)
+    //   - currentPrice: number (required)
+    //   - requiredCapital: number (required)
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "phpower1@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$") &&
+        email.size() < 100;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUser(data) {
+      return data.keys().hasOnly(['uid', 'email', 'role']) &&
+             data.keys().hasAll(['uid', 'email', 'role']) &&
+             data.uid is string && data.uid.size() > 0 && data.uid.size() < 50 &&
+             isValidEmail(data.email) &&
+             data.role in ['client', 'admin'];
+    }
+
+    function isValidTrade(data) {
+      let reqKeys = ['userId', 'symbol', 'type', 'quantity', 'price', 'date', 'status', 'requiredCapital', 'peakCapital'];
+      let optKeys = ['closePrice', 'closeDate'];
+      
+      let hasReq = data.keys().hasAll(reqKeys);
+      let onlyAllowed = data.keys().hasOnly(reqKeys.concat(optKeys));
+      
+      let validReqTypes = hasReq &&
+             data.userId is string && data.userId.size() < 50 &&
+             data.symbol is string && data.symbol.size() > 0 && data.symbol.size() < 20 &&
+             data.type in ['Buy', 'Sell'] &&
+             data.quantity is number &&
+             data.price is number && data.price >= 0 &&
+             data.date is string && data.date.size() < 50 &&
+             data.status in ['Open', 'Closed'] &&
+             data.requiredCapital is number && data.requiredCapital >= 0 &&
+             data.peakCapital is number && data.peakCapital >= 0;
+             
+      // Explicit optional fields typing check
+      let validClosePrice = !('closePrice' in data) || data.closePrice == null || (data.closePrice is number && data.closePrice >= 0);
+      let validCloseDate = !('closeDate' in data) || data.closeDate == null || (data.closeDate is string && data.closeDate.size() < 50);
+
+      return hasReq && onlyAllowed && validReqTypes && validClosePrice && validCloseDate;
+    }
+
+    function isValidPosition(data) {
+      let reqKeys = ['userId', 'symbol', 'quantity', 'averagePrice', 'currentPrice', 'requiredCapital'];
+      
+      return data.keys().hasAll(reqKeys) && data.keys().hasOnly(reqKeys) &&
+             data.userId is string && data.userId.size() < 50 &&
+             data.symbol is string && data.symbol.size() > 0 && data.symbol.size() < 20 &&
+             data.quantity is number &&
+             data.averagePrice is number && data.averagePrice >= 0 &&
+             data.currentPrice is number && data.currentPrice >= 0 &&
+             data.requiredCapital is number && data.requiredCapital >= 0;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isAuthenticated() && isValidUser(request.resource.data) && 
+                       request.resource.data.uid == userId &&
+                       ((isOwner(userId) && request.resource.data.role == 'client') || isAdmin());
+      allow update: if isAuthenticated() && isValidUser(request.resource.data) && 
+                       request.resource.data.uid == userId &&
+                       request.resource.data.uid == resource.data.uid &&
+                       ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
+      allow delete: if isAdmin();
+      
+      match /trades/{tradeId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if (isOwner(userId) || isAdmin()) && 
+                         isValidTrade(request.resource.data) && 
+                         request.resource.data.userId == userId;
+        allow update: if (isOwner(userId) || isAdmin()) && 
+                         isValidTrade(request.resource.data) && 
+                         request.resource.data.userId == resource.data.userId &&
+                         request.resource.data.userId == userId;
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /positions/{positionId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if (isOwner(userId) || isAdmin()) && 
+                         isValidPosition(request.resource.data) && 
+                         request.resource.data.userId == userId;
+        allow update: if (isOwner(userId) || isAdmin()) && 
+                         isValidPosition(request.resource.data) && 
+                         request.resource.data.userId == resource.data.userId &&
+                         request.resource.data.userId == userId;
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+  }
+}

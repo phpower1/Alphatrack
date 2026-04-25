@@ -1,0 +1,62 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "A user of the application",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["client", "admin"] }
+      },
+      "required": ["uid", "email", "role"]
+    },
+    "Trade": {
+      "title": "Trade",
+      "description": "A trade record",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "symbol": { "type": "string" },
+        "type": { "type": "string", "enum": ["Buy", "Sell"] },
+        "quantity": { "type": "number" },
+        "price": { "type": "number" },
+        "date": { "type": "string" },
+        "status": { "type": "string", "enum": ["Open", "Closed"] },
+        "closePrice": { "type": ["number", "null"] },
+        "closeDate": { "type": ["string", "null"] },
+        "requiredCapital": { "type": "number" },
+        "peakCapital": { "type": "number" }
+      },
+      "required": ["userId", "symbol", "type", "quantity", "price", "date", "status", "requiredCapital", "peakCapital"]
+    },
+    "Position": {
+      "title": "Position",
+      "description": "An open position record",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "symbol": { "type": "string" },
+        "quantity": { "type": "number" },
+        "averagePrice": { "type": "number" },
+        "currentPrice": { "type": "number" },
+        "requiredCapital": { "type": "number" }
+      },
+      "required": ["userId", "symbol", "quantity", "averagePrice", "currentPrice", "requiredCapital"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "users/{userId}/trades/{tradeId}": {
+      "schema": { "$ref": "#/entities/Trade" },
+      "description": "User trades"
+    },
+    "users/{userId}/positions/{positionId}": {
+      "schema": { "$ref": "#/entities/Position" },
+      "description": "User open positions"
+    }
+  }
+}
