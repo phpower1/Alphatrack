@@ -20,8 +20,6 @@ async function startServer() {
   // NOTE: You must add this exact URI to your Tastytrade Developer Dashboard under "Redirect URIs"
   // If you are using the shared link instead of dev, use the ais-pre URL instead.
   const TASTY_REDIRECT_URI = process.env.TASTYTRADE_REDIRECT_URI || "https://ais-dev-kx6pemhd7nhpmnpdnzdq6s-242598958176.us-west2.run.app/api/tastytrade/callback";
-  
-  const TASTY_USER_AGENT = "TastytradeAnalytics/1.0";
 
   // API routes FIRST
   app.get("/api/health", (req, res) => {
@@ -48,7 +46,7 @@ async function startServer() {
 
         const response = await axios.post(`${TASTY_BASE_URL}/oauth/token`, payload, {
           headers: {
-            'User-Agent': TASTY_USER_AGENT,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'application/json'
           }
         });
@@ -79,7 +77,7 @@ async function startServer() {
 
       const response = await axios.post(`${TASTY_BASE_URL}/sessions`, payload, {
         headers: {
-          'User-Agent': TASTY_USER_AGENT,
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
           'Accept': 'application/json'
         }
       });
@@ -109,7 +107,7 @@ async function startServer() {
       if (!token) return res.status(401).json({ error: "Missing session token" });
 
       const response = await axios.get(`${TASTY_BASE_URL}/customers/me/accounts`, {
-        headers: { Authorization: token, 'User-Agent': TASTY_USER_AGENT }
+        headers: { Authorization: token }
       });
 
       const fs = require('fs');
@@ -131,7 +129,7 @@ async function startServer() {
       if (!token) return res.status(401).json({ error: "Missing session token" });
 
       const response = await axios.get(`${TASTY_BASE_URL}/accounts/${accountId}/transactions`, {
-        headers: { Authorization: token, 'User-Agent': TASTY_USER_AGENT }
+        headers: { Authorization: token }
       });
 
       const fs = require('fs');
@@ -152,7 +150,7 @@ async function startServer() {
       if (!token) return res.status(401).json({ error: "Missing session token" });
 
       const response = await axios.get(`${TASTY_BASE_URL}/accounts/${accountId}/balances`, {
-        headers: { Authorization: token, 'User-Agent': TASTY_USER_AGENT }
+        headers: { Authorization: token }
       });
 
       res.json(response.data.data);
