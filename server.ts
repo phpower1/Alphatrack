@@ -6,7 +6,7 @@ import axios from "axios";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT || 3000;
 
   app.use(cors());
   app.use(express.json());
@@ -18,8 +18,9 @@ async function startServer() {
   const TASTY_CLIENT_SECRET = process.env.TASTYTRADE_CLIENT_SECRET || "3f851f707017fb8914f1f3005f8aaa567197ab5e";
   
   // NOTE: You must add this exact URI to your Tastytrade Developer Dashboard under "Redirect URIs"
-  // If you are using the shared link instead of dev, use the ais-pre URL instead.
-  const TASTY_REDIRECT_URI = process.env.TASTYTRADE_REDIRECT_URI || "https://ais-dev-kx6pemhd7nhpmnpdnzdq6s-242598958176.us-west2.run.app/api/tastytrade/callback";
+  const TASTY_REDIRECT_URI = process.env.TASTYTRADE_REDIRECT_URI || "https://tastytrade-analytics-j6cuv4cgma-uc.a.run.app/api/tastytrade/callback";
+  
+  const TASTY_USER_AGENT = "TastytradeAnalytics/1.0";
 
   // API routes FIRST
   app.get("/api/health", (req, res) => {
