@@ -273,7 +273,7 @@ export default function App() {
             <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
               <Activity className="w-6 h-6 text-brand-accent" />
             </div>
-            <CardTitle className="text-2xl font-bold text-foreground">Tastytrade Analytics</CardTitle>
+            <CardTitle className="text-2xl font-bold text-foreground">Alphatrack</CardTitle>
             <CardDescription className="text-muted-foreground">Log in to link your brokerage account data to the analytics platform.</CardDescription>
           </CardHeader>
           <CardContent className="flex justify-center pb-8">

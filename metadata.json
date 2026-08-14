@@ -1,5 +1,5 @@
 {
-  "name": "Tastytrade Analytics",
+  "name": "Alphatrack",
   "description": "A full-stack web app that connects to Tastytrade via OAuth, fetches trade and position data, and tracks advanced ROI metrics including average and peak capital.",
   "requestFramePermissions": [],
   "majorCapabilities": []

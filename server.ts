@@ -6,7 +6,7 @@ import axios from "axios";
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT || 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(cors());
   app.use(express.json());
@@ -20,7 +20,7 @@ async function startServer() {
   // NOTE: You must add this exact URI to your Tastytrade Developer Dashboard under "Redirect URIs"
   const TASTY_REDIRECT_URI = process.env.TASTYTRADE_REDIRECT_URI || "https://tastytrade-analytics-j6cuv4cgma-uc.a.run.app/api/tastytrade/callback";
   
-  const TASTY_USER_AGENT = "TastytradeAnalytics/1.0";
+  const TASTY_USER_AGENT = "Alphatrack/1.0";
 
   // API routes FIRST
   app.get("/api/health", (req, res) => {
@@ -108,16 +108,18 @@ async function startServer() {
       if (!token) return res.status(401).json({ error: "Missing session token" });
 
       const response = await axios.get(`${TASTY_BASE_URL}/customers/me/accounts`, {
-        headers: { Authorization: token }
+        headers: { 
+          Authorization: token,
+          'User-Agent': TASTY_USER_AGENT,
+          'Accept': 'application/json'
+        }
       });
 
-      const fs = require('fs');
-      fs.appendFileSync('tasty_debug.log', JSON.stringify({ endpoint: 'accounts', data: response.data }) + '\n');
       console.log("Success fetching accounts. Found:", response.data.data?.items?.length || 0);
       res.json(response.data.data);
     } catch (error: any) {
-      console.error("Error fetching accounts:", error.response?.status, error.response?.data);
-      res.status(error.response?.status || 500).json(error.response?.data || { error: "Failed to fetch accounts" });
+      console.error("Error fetching accounts:", error.message, error.code, error.response?.status, error.response?.data);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch accounts" });
     }
   });
 
@@ -130,16 +132,18 @@ async function startServer() {
       if (!token) return res.status(401).json({ error: "Missing session token" });
 
       const response = await axios.get(`${TASTY_BASE_URL}/accounts/${accountId}/transactions`, {
-        headers: { Authorization: token }
+        headers: { 
+          Authorization: token,
+          'User-Agent': TASTY_USER_AGENT,
+          'Accept': 'application/json'
+        }
       });
 
-      const fs = require('fs');
-      fs.appendFileSync('tasty_debug.log', JSON.stringify({ endpoint: 'transactions', accountId, count: response.data.data?.items?.length || 0, first: response.data.data?.items?.[0] }) + '\n');
       console.log(`Success fetching transactions for ${accountId}. Found:`, response.data.data?.items?.length || 0);
       res.json(response.data.data);
     } catch (error: any) {
-      console.error(`Error fetching transactions for ${req.params.accountId}:`, error.response?.status, error.response?.data);
-      res.status(error.response?.status || 500).json(error.response?.data || { error: "Failed to fetch transactions" });
+      console.error(`Error fetching transactions for ${req.params.accountId}:`, error.message, error.code, error.response?.status, error.response?.data);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch transactions" });
     }
   });
 
@@ -151,7 +155,11 @@ async function startServer() {
       if (!token) return res.status(401).json({ error: "Missing session token" });
 
       const response = await axios.get(`${TASTY_BASE_URL}/accounts/${accountId}/balances`, {
-        headers: { Authorization: token }
+        headers: { 
+          Authorization: token,
+          'User-Agent': TASTY_USER_AGENT,
+          'Accept': 'application/json'
+        }
       });
 
       res.json(response.data.data);
