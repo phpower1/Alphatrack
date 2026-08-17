@@ -1,31 +1,46 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, collection, doc, query, where, getDocs, setDoc, onSnapshot } from 'firebase/firestore';
+import { initializeApp, getApps } from 'firebase/app';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
+import { getFirestore, doc, setDoc } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+const app = getApps().length > 0 ? getApps()[0] : initializeApp(firebaseConfig);
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+
+// Safe Firestore initialization with fallback
+export const db = (() => {
+  try {
+    if (firebaseConfig.firestoreDatabaseId && firebaseConfig.firestoreDatabaseId !== '(default)') {
+      return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+    }
+    return getFirestore(app);
+  } catch (e) {
+    console.warn('Custom database ID fallback to default Firestore:', e);
+    return getFirestore(app);
+  }
+})();
 
 export const googleProvider = new GoogleAuthProvider();
+googleProvider.setCustomParameters({ prompt: 'select_account' });
 
 export const loginWithGoogle = async () => {
-  try {
-    const result = await signInWithPopup(auth, googleProvider);
-    
-    // Ensure user document exists
-    const userRef = doc(db, 'users', result.user.uid);
-    await setDoc(userRef, {
-      uid: result.user.uid,
-      email: result.user.email,
-      role: 'client' // Or keep it simple, it'll fail if exists unless we use setDoc with merge or we do a check
-    }, { merge: true });
-
-    return result.user;
-  } catch (error) {
-    console.error("Error signing in with Google", error);
-    throw error;
+  const result = await signInWithPopup(auth, googleProvider);
+  
+  // Non-blocking Firestore user metadata sync
+  if (result.user) {
+    try {
+      const userRef = doc(db, 'users', result.user.uid);
+      await setDoc(userRef, {
+        uid: result.user.uid,
+        email: result.user.email,
+        lastLogin: new Date().toISOString()
+      }, { merge: true });
+    } catch (err) {
+      console.warn('Optional Firestore profile sync note:', err);
+    }
   }
+
+  return result.user;
 };
 
 export const logout = () => signOut(auth);
+
