@@ -92,6 +92,8 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
 
   // SnapTrade API status & state
   const [apiStatus, setApiStatus] = useState<{ isConfigured: boolean; mode: string; clientIdMasked: string | null }>({
@@ -467,6 +469,30 @@ export default function App() {
   const activeTrade = trades.find(t => t.id === activeTradeId) || filteredTrades[0];
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
+  const handleGoogleLogin = async () => {
+    setAuthError(null);
+    setIsSigningIn(true);
+    try {
+      await loginWithGoogle();
+    } catch (err: any) {
+      console.error('Google Sign In failed:', err);
+      const code = err.code || '';
+      const msg = err.message || '';
+      if (code === 'auth/unauthorized-domain' || msg.includes('unauthorized-domain')) {
+        const currentHost = window.location.hostname;
+        setAuthError(`Domain "${currentHost}" is not authorized in Firebase. Please add "${currentHost}" to Authorized Domains in your Firebase Authentication Console.`);
+      } else if (code === 'auth/popup-closed-by-user') {
+        setAuthError('Sign-in popup was closed before completing authentication.');
+      } else if (code === 'auth/popup-blocked') {
+        setAuthError('Popup was blocked by the browser. Please allow popups for this site.');
+      } else {
+        setAuthError(err.message || 'Failed to sign in with Google');
+      }
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
   if (!isAuthReady) {
     return (
       <div className="min-h-screen bg-[#0d0e12] flex flex-col items-center justify-center p-4">
@@ -492,13 +518,28 @@ export default function App() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4 pb-8">
+            {authError && (
+              <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-3.5 rounded-xl leading-relaxed">
+                <div className="font-semibold text-rose-400 flex items-center gap-1.5 mb-1">
+                  <AlertCircle className="w-4 h-4" />
+                  <span>Authentication Notice</span>
+                </div>
+                <div>{authError}</div>
+              </div>
+            )}
+
             <Button 
-              onClick={loginWithGoogle} 
+              onClick={handleGoogleLogin} 
+              disabled={isSigningIn}
               size="lg" 
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-3 transition-all"
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-3 transition-all cursor-pointer disabled:opacity-50"
             >
-              <LogIn className="w-5 h-5" />
-              Sign in with Google
+              {isSigningIn ? (
+                <Activity className="w-5 h-5 animate-spin" />
+              ) : (
+                <LogIn className="w-5 h-5" />
+              )}
+              {isSigningIn ? 'Opening Google Login...' : 'Sign in with Google'}
             </Button>
             <div className="flex items-center justify-center gap-2 text-xs text-slate-500 mt-2">
               <ShieldCheck className="w-4 h-4 text-emerald-400" />
