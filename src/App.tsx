@@ -121,12 +121,7 @@ export default function App() {
   const [portalError, setPortalError] = useState('');
 
   const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
-  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
 
-  // Settings form
-  const [settingClientId, setSettingClientId] = useState('');
-  const [settingConsumerKey, setSettingConsumerKey] = useState('');
-  const [settingsSaved, setSettingsSaved] = useState(false);
 
   // Fetch API status on mount
   const checkStatus = async () => {
@@ -377,32 +372,6 @@ export default function App() {
     }
   };
 
-  // Save Settings / API Keys
-  const handleSaveSettings = async (e: React.FormEvent) => {
-    e.preventDefault();
-    try {
-      const res = await fetch('/api/snaptrade/configure', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: settingClientId,
-          consumerKey: settingConsumerKey
-        })
-      });
-      if (res.ok) {
-        setSettingsSaved(true);
-        checkStatus();
-        if (user) fetchAllData(user.uid);
-        setTimeout(() => {
-          setSettingsSaved(false);
-          setSettingsDialogOpen(false);
-        }, 1200);
-      }
-    } catch (e) {
-      console.error('Failed to save settings:', e);
-    }
-  };
-
   // Filter trades and positions based on selected account and search
   const filteredTrades = useMemo(() => {
     let list = trades;
@@ -628,16 +597,6 @@ export default function App() {
           >
             <Building2 className="w-3.5 h-3.5" />
             <span className="hidden lg:inline">Brokers ({connections.length || accounts.length})</span>
-          </Button>
-
-          {/* Settings Modal */}
-          <Button
-            onClick={() => setSettingsDialogOpen(true)}
-            variant="outline"
-            className="bg-[#181a22] border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-2.5 h-8 rounded-lg flex items-center cursor-pointer transition-all"
-            title="SnapTrade API Configuration"
-          >
-            <Settings className="w-3.5 h-3.5" />
           </Button>
 
           {/* Sign Out */}
@@ -1019,18 +978,15 @@ export default function App() {
                 </p>
                 <div className="flex gap-3 justify-center">
                   <Button
-                    onClick={() => {
-                      setPortalDialogOpen(false);
-                      setSettingsDialogOpen(true);
-                    }}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4"
+                    onClick={handleOpenConnectionPortal}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 cursor-pointer"
                   >
-                    Open Settings
+                    Try Again
                   </Button>
                   <Button
                     onClick={() => setPortalDialogOpen(false)}
                     variant="outline"
-                    className="border-slate-700 text-slate-300 text-xs"
+                    className="border-slate-700 text-slate-300 text-xs cursor-pointer"
                   >
                     Close
                   </Button>
@@ -1079,7 +1035,7 @@ export default function App() {
                       onClick={() => handleDisconnectBroker(id)}
                       variant="ghost"
                       size="sm"
-                      className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 h-8 px-2.5 text-xs"
+                      className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 h-8 px-2.5 text-xs cursor-pointer"
                       title="Disconnect Brokerage"
                     >
                       <Trash2 className="w-3.5 h-3.5 mr-1" />
@@ -1097,95 +1053,12 @@ export default function App() {
                 setConnectionsDialogOpen(false);
                 handleOpenConnectionPortal();
               }}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-9"
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-9 cursor-pointer"
             >
               <PlusCircle className="w-4 h-4 mr-1.5" />
               Link Another Brokerage
             </Button>
           </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* SnapTrade API Keys Settings Dialog */}
-      <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
-        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-md">
-          <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <Key className="w-5 h-5 text-indigo-400" />
-              <span>SnapTrade API Credentials</span>
-            </DialogTitle>
-            <DialogDescription className="text-slate-400 text-xs">
-              Get your Client ID and Consumer Key from the{' '}
-              <a 
-                href="https://dashboard.snaptrade.com/api-key" 
-                target="_blank" 
-                rel="noreferrer" 
-                className="text-indigo-400 hover:underline inline-flex items-center gap-0.5"
-              >
-                SnapTrade Dashboard <ExternalLink className="w-3 h-3 ml-0.5 inline" />
-              </a>
-            </DialogDescription>
-          </DialogHeader>
-
-          <form onSubmit={handleSaveSettings} className="space-y-4 my-2">
-            <div className="bg-slate-800/40 p-3 rounded-lg border border-slate-800 text-xs flex items-center justify-between">
-              <span className="text-slate-400">Current Mode:</span>
-              <span className="font-semibold text-indigo-300">{apiStatus.mode}</span>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="snapClientId" className="text-xs uppercase text-slate-400 font-semibold tracking-wider">
-                SnapTrade Client ID
-              </Label>
-              <Input
-                id="snapClientId"
-                required
-                placeholder="e.g. YOUR_CLIENT_ID"
-                value={settingClientId}
-                onChange={(e) => setSettingClientId(e.target.value)}
-                className="bg-[#181a22] border-slate-800 text-white text-xs h-10 font-mono"
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label htmlFor="snapConsumerKey" className="text-xs uppercase text-slate-400 font-semibold tracking-wider">
-                SnapTrade Consumer Key
-              </Label>
-              <Input
-                id="snapConsumerKey"
-                type="password"
-                required
-                placeholder="••••••••••••••••••••••••"
-                value={settingConsumerKey}
-                onChange={(e) => setSettingConsumerKey(e.target.value)}
-                className="bg-[#181a22] border-slate-800 text-white text-xs h-10 font-mono"
-              />
-            </div>
-
-            {settingsSaved && (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-3 rounded-lg text-xs flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4" />
-                <span>Credentials saved successfully!</span>
-              </div>
-            )}
-
-            <div className="flex gap-2 justify-end pt-3 border-t border-slate-800/80">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setSettingsDialogOpen(false)}
-                className="border-slate-700 text-slate-300 text-xs h-10"
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-10 px-5"
-              >
-                Save & Connect
-              </Button>
-            </div>
-          </form>
         </DialogContent>
       </Dialog>
     </div>
