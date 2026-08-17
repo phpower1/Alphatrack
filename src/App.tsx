@@ -342,7 +342,11 @@ export default function App() {
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error?.message || data.error || 'Failed to generate SnapTrade Connection Portal link');
+        let msg = data.error?.message || data.error || (typeof data.detail === 'string' ? data.detail : '');
+        if (res.status === 401 || (typeof msg === 'string' && msg.includes('401'))) {
+          msg = 'Invalid or unapproved SnapTrade API credentials (401 Unauthorized). Please verify your Client ID and Consumer Key in the SnapTrade Dashboard and update them via Settings.';
+        }
+        throw new Error(msg || 'Failed to generate SnapTrade Connection Portal link');
       }
 
       if (data.redirectURI) {
