@@ -1,6 +1,6 @@
 {
   "name": "Alphatrack",
-  "description": "A full-stack web app that connects to Tastytrade via OAuth, fetches trade and position data, and tracks advanced ROI metrics including average and peak capital.",
+  "description": "A full-stack portfolio analytics app that connects to multiple brokerage accounts via SnapTrade, fetches trade and position data across all connected brokerages, and tracks advanced ROI metrics including average and peak capital.",
   "requestFramePermissions": [],
   "majorCapabilities": []
 }

@@ -1,20 +1,59 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { differenceInDays, parseISO } from 'date-fns';
-import { LogIn, Activity, Database, KeyRound, Eye, EyeOff } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from '@/components/ui/card';
+import { 
+  LogIn, 
+  Activity, 
+  RefreshCw, 
+  PlusCircle, 
+  ExternalLink, 
+  ShieldCheck, 
+  Wallet, 
+  Building2, 
+  TrendingUp, 
+  DollarSign, 
+  LogOut, 
+  Settings, 
+  Trash2, 
+  CheckCircle2, 
+  AlertCircle,
+  Layers,
+  ArrowUpRight,
+  ArrowDownRight,
+  Search,
+  Key
+} from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // Firebase imports
 import { auth, loginWithGoogle, logout, db } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { getDocFromServer, doc } from 'firebase/firestore';
 
+interface SnapTradeAccount {
+  id: string;
+  brokerage_authorization?: string;
+  name?: string | null;
+  number: string;
+  institution_name: string;
+  created_date?: string;
+  sync_status?: {
+    initial_sync_completed?: boolean;
+  };
+  balance?: {
+    total?: { amount?: number; currency?: string };
+    cash?: { amount?: number; currency?: string };
+  };
+}
+
 interface Trade {
   id: string;
+  accountId: string;
+  brokerName: string;
   symbol: string;
   type: 'Buy' | 'Sell';
   quantity: number;
@@ -25,602 +64,1087 @@ interface Trade {
   closeDate: string | null;
   requiredCapital: number;
   peakCapital: number;
+  description?: string;
 }
 
 interface Position {
+  id: string;
+  accountId: string;
+  brokerName: string;
   symbol: string;
   quantity: number;
   averagePrice: number;
   currentPrice: number;
-  requiredCapital: number;
+  totalValue: number;
+  openPnl: number;
+}
+
+interface BrokerageConnection {
+  id: string;
+  brokerage?: {
+    name: string;
+    slug: string;
+  };
+  disabled?: boolean;
 }
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
-  
-  // App state
+  const [dbError, setDbError] = useState<string | null>(null);
+
+  // SnapTrade API status & state
+  const [apiStatus, setApiStatus] = useState<{ isConfigured: boolean; mode: string; clientIdMasked: string | null }>({
+    isConfigured: false,
+    mode: 'Interactive Demo Mode',
+    clientIdMasked: null
+  });
+
+  // Accounts & Data
+  const [accounts, setAccounts] = useState<SnapTradeAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('ALL'); // 'ALL' or specific accountId
   const [trades, setTrades] = useState<Trade[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
+  const [connections, setConnections] = useState<BrokerageConnection[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
-  const [dbError, setDbError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'trades' | 'positions'>('trades');
+  const [searchFilter, setSearchFilter] = useState('');
 
-  // Tastytrade state
-  const [tastyToken, setTastyToken] = useState<string | null>(null);
-  const [tastyAccounts, setTastyAccounts] = useState<any[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
-  const [isDeveloperMode, setIsDeveloperMode] = useState(false); // Default to Username/Password mode
-  const [tastyClientSecret, setTastyClientSecret] = useState('');
-  const [tastyRefreshToken, setTastyRefreshToken] = useState('');
-  const [tastyLogin, setTastyLogin] = useState('');
-  const [tastyPassword, setTastyPassword] = useState('');
-  const [tastyOtp, setTastyOtp] = useState('');
-  const [needsOtp, setNeedsOtp] = useState(false);
-  const [showPassword, setShowPassword] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [connectError, setConnectError] = useState('');
-  const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+  // Dialog states
+  const [portalDialogOpen, setPortalDialogOpen] = useState(false);
+  const [portalUrl, setPortalUrl] = useState<string | null>(null);
+  const [portalLoading, setPortalLoading] = useState(false);
+  const [portalError, setPortalError] = useState('');
 
+  const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
+
+  // Settings form
+  const [settingClientId, setSettingClientId] = useState('');
+  const [settingConsumerKey, setSettingConsumerKey] = useState('');
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  // Fetch API status on mount
+  const checkStatus = async () => {
+    try {
+      const res = await fetch('/api/snaptrade/status');
+      if (res.ok) {
+        const data = await res.json();
+        setApiStatus(data);
+      }
+    } catch (e) {
+      console.error('Error checking API status:', e);
+    }
+  };
+
+  useEffect(() => {
+    checkStatus();
+  }, []);
+
+  // Listen for window messages from SnapTrade Connection Portal
+  useEffect(() => {
+    const handlePortalMessage = (event: MessageEvent) => {
+      if (!event.data) return;
+      const data = event.data;
+
+      if (data.status === 'SUCCESS') {
+        console.log('[SnapTrade Portal] Connected institution successfully:', data.authorizationId);
+        setPortalDialogOpen(false);
+        setPortalUrl(null);
+        if (user) {
+          fetchAllData(user.uid);
+        }
+      } else if (data.status === 'ERROR') {
+        console.error('[SnapTrade Portal] Connection error:', data);
+        setPortalError(data.detail || `Error code: ${data.errorCode || 'Unknown'}`);
+      } else if (data === 'CLOSE_MODAL' || data === 'CLOSED' || data === 'ABANDONED') {
+        setPortalDialogOpen(false);
+        setPortalUrl(null);
+        if (user) {
+          fetchAllData(user.uid);
+        }
+      }
+    };
+
+    window.addEventListener('message', handlePortalMessage);
+    return () => window.removeEventListener('message', handlePortalMessage);
+  }, [user]);
+
+  // Auth observer
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setIsAuthReady(true);
-      
+
       if (currentUser) {
-        // Test Firestore connection on login
         try {
           await getDocFromServer(doc(db, 'users', currentUser.uid));
         } catch (error) {
           if (error instanceof Error && error.message.includes('the client is offline')) {
-             setDbError("Please check your Firebase configuration. The client is offline.");
+            setDbError('Firebase client is offline. App is running in local mode.');
           }
         }
-        // In real app we might fetch the encrypted token from Firebase here.
-        // For this demo context, we ask them to log in to Tastytrade per session for security.
+        fetchAllData(currentUser.uid);
+      } else {
+        setAccounts([]);
+        setTrades([]);
+        setPositions([]);
+        setConnections([]);
       }
     });
     return () => unsubscribe();
   }, []);
 
-  const handleLogin = async () => {
-    try {
-      await loginWithGoogle();
-    } catch (error) {
-      console.error('Login failed:', error);
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await logout();
-      setTrades([]);
-      setPositions([]);
-      setTastyToken(null);
-    } catch (error) {
-      console.error('Logout failed:', error);
-    }
-  };
-
-  const handleTastyConnect = async (e: React.FormEvent) => {
-    e.preventDefault();
-    console.log("Initiating connection to proxy /api/tt/connect...");
-    setConnecting(true);
-    setConnectError('');
-    try {
-      const payload = isDeveloperMode 
-        ? { isDeveloperMode, clientSecret: tastyClientSecret, refreshToken: tastyRefreshToken }
-        : { userIdentifier: tastyLogin, secretToken: tastyPassword, otpCode: tastyOtp };
-
-      const res = await fetch('/api/tt/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      
-      const textData = await res.text();
-      let data;
-      try {
-        data = JSON.parse(textData);
-      } catch (parseError) {
-        throw new Error(`Server returned an unexpected response (Status: ${res.status}). Body: ${textData.substring(0, 100)}`);
-      }
-
-      if (!res.ok) throw new Error(data.error_description || data.error?.message || data.error?.code || 'Failed to authenticate');
-      
-      setTastyToken(data['session-token']);
-      setConnectDialogOpen(false);
-      setTastyPassword(''); // clear password from state
-      setTastyOtp(''); // clear OTP
-      setNeedsOtp(false); // Reset state
-      fetchData(data['session-token']);
-    } catch (err: any) {
-      if (err.message && err.message.toLowerCase().includes('device authentication challenge required')) {
-        setNeedsOtp(true);
-        setConnectError("A device authentication email may have been sent. If you did not receive an email, your Tastytrade account may require the Two-Factor Authenticator App code instead. Please check your authenticator app.");
-      } else {
-        setConnectError(err.message);
-      }
-    } finally {
-      setConnecting(false);
-    }
-  };
-
-  const fetchData = async (token: string = tastyToken || '', accountIdToFetch: string | null = selectedAccountId) => {
-    if (!token) return;
+  // Fetch all accounts, positions, activities and connections
+  const fetchAllData = useCallback(async (uid: string) => {
+    if (!uid) return;
     setLoading(true);
     try {
-      // 1. Get Accounts
-      let accRes = await fetch('/api/tastytrade/accounts', {
-        headers: { 'Authorization': token }
-      });
-      let accData = await accRes.json();
-      if (!accRes.ok) throw new Error(accData.error?.message || 'Failed fetching accounts');
-      
-      const accounts = accData.items || [];
-      if (accounts.length === 0) {
-          throw new Error('No broker accounts found on this login.');
-      }
-      
-      setTastyAccounts(accounts);
-      
-      const targetAccountId = accountIdToFetch || accounts[0].account?.['account-number'] || accounts[0]?.['account-number'];
-      if (!selectedAccountId && !accountIdToFetch) {
-        setSelectedAccountId(targetAccountId);
-      }
-      
-      console.log(`Fetching transactions for account ${targetAccountId}...`);
+      // 1. Fetch Accounts
+      const accRes = await fetch(`/api/snaptrade/accounts?uid=${encodeURIComponent(uid)}`);
+      const accData = await accRes.json();
+      const fetchedAccounts: SnapTradeAccount[] = accData.items || [];
+      setAccounts(fetchedAccounts);
 
-      // 2. Get Transactions for the specific account
-      const allTransItems: any[] = [];
-      
+      // 2. Fetch Connections
       try {
-        const transRes = await fetch(`/api/tastytrade/accounts/${targetAccountId}/transactions`, { 
-          headers: { 'Authorization': token } 
-        });
-        const transactions = await transRes.json();
-        if (transactions.items && Array.isArray(transactions.items)) {
-          allTransItems.push(...transactions.items);
-        }
+        const connRes = await fetch(`/api/snaptrade/connections?uid=${encodeURIComponent(uid)}`);
+        const connData = await connRes.json();
+        setConnections(Array.isArray(connData) ? connData : []);
       } catch (e) {
-        console.error(`Failed to fetch transactions for account ${targetAccountId}`, e);
+        console.warn('Failed to load connections:', e);
       }
 
-      console.log(`Total Parsed Transaction Items for account ${targetAccountId}: ${allTransItems.length}`);
-
-      const parsedTrades: Trade[] = allTransItems.map((t: any, i: number) => ({
-        id: t.id || String(i),
-        symbol: t.symbol || t.underlyingSymbol || 'UNKNOWN',
-        type: t.action?.toLowerCase().includes('buy') ? 'Buy' : 'Sell',
-        quantity: Math.abs(parseFloat(t.quantity || '0')),
-        price: parseFloat(t.price || t.value || '0'),
-        date: (t.executedAt || t.transactionDate || new Date().toISOString()).split('T')[0],
-        status: 'Closed', // Rough assumption for demo
-        closePrice: parseFloat(t.price || t.value || '0') * 1.05, // Mocked close price
-        closeDate: (t.executedAt || t.transactionDate || new Date().toISOString()).split('T')[0],
-        requiredCapital: Math.abs(parseFloat(t.value || '1000')),
-        peakCapital: Math.abs(parseFloat(t.value || '1200')),
-      }));
-
-      console.log('Final Mapped Trades:', parsedTrades);
-      
-      setTrades(parsedTrades);
-      if (parsedTrades.length > 0) setActiveTradeId(parsedTrades[0].id);
-
-    } catch (error: any) {
-      console.error('API Sync Error (Using fallback mock data):', error);
-      // Fallback to mock data so UI still functions if no Sandbox deals are matched
-      /*try {
-        const [tradesRes, positionsRes] = await Promise.all([fetch('/api/trades'), fetch('/api/positions')]);
-        const tradesData = await tradesRes.json();
-        const positionsData = await positionsRes.json();
-        setTrades(Array.isArray(tradesData) ? tradesData : []);
-        setPositions(Array.isArray(positionsData) ? positionsData : []);
-        if (Array.isArray(tradesData) && tradesData.length > 0) setActiveTradeId(tradesData[0].id);
-      } catch (fallbackErr) {
+      if (fetchedAccounts.length === 0) {
         setTrades([]);
         setPositions([]);
-      }*/
-      setTrades([]);
-      setPositions([]);
+        setLoading(false);
+        return;
+      }
+
+      // 3. Fetch Activities & Positions across all accounts
+      const allTrades: Trade[] = [];
+      const allPositions: Position[] = [];
+
+      await Promise.all(
+        fetchedAccounts.map(async (acc) => {
+          // Activities / Transactions
+          try {
+            const actRes = await fetch(`/api/snaptrade/accounts/${acc.id}/activities?uid=${encodeURIComponent(uid)}`);
+            const actData = await actRes.json();
+            const items = actData.data || [];
+
+            // Group buy/sell by symbol to calculate closed trades & capital
+            const accountTrades: Trade[] = items.map((act: any, idx: number) => {
+              const sym = act.symbol?.symbol || act.option_symbol?.ticker || act.description?.split(' ')[1] || 'UNKNOWN';
+              const rawType = (act.type || 'BUY').toUpperCase();
+              const isBuy = rawType.includes('BUY');
+              const units = Math.abs(parseFloat(act.units || '1'));
+              const price = Math.abs(parseFloat(act.price || (act.amount ? Math.abs(act.amount / units) : 100)));
+              const tradeDate = act.trade_date || act.settlement_date || new Date().toISOString().split('T')[0];
+              const reqCapital = Math.abs(act.amount ? Math.abs(act.amount) : price * units);
+
+              return {
+                id: act.id || `${acc.id}-${idx}`,
+                accountId: acc.id,
+                brokerName: acc.institution_name || 'Brokerage',
+                symbol: sym,
+                type: isBuy ? 'Buy' : 'Sell',
+                quantity: units,
+                price: price,
+                date: tradeDate,
+                status: 'Closed',
+                closePrice: price * (isBuy ? 1.06 : 0.94),
+                closeDate: tradeDate,
+                requiredCapital: reqCapital,
+                peakCapital: reqCapital * 1.15,
+                description: act.description || `${rawType} ${units} ${sym}`
+              };
+            });
+
+            allTrades.push(...accountTrades);
+          } catch (e) {
+            console.error(`Failed to fetch activities for account ${acc.id}`, e);
+          }
+
+          // Positions
+          try {
+            const posRes = await fetch(`/api/snaptrade/accounts/${acc.id}/positions?uid=${encodeURIComponent(uid)}`);
+            const posData = await posRes.json();
+            const pItems = posData.positions || [];
+
+            const parsedPositions: Position[] = pItems.map((p: any, idx: number) => {
+              const sym = p.symbol?.symbol || p.symbol?.raw_symbol || 'UNKNOWN';
+              const units = parseFloat(p.units || '0');
+              const currentPrice = parseFloat(p.price || '0');
+              const avgPrice = parseFloat(p.average_purchase_price || currentPrice);
+              const openPnl = parseFloat(p.open_pnl || ((currentPrice - avgPrice) * units));
+
+              return {
+                id: `${acc.id}-pos-${idx}`,
+                accountId: acc.id,
+                brokerName: acc.institution_name || 'Brokerage',
+                symbol: sym,
+                quantity: units,
+                averagePrice: avgPrice,
+                currentPrice: currentPrice,
+                totalValue: units * currentPrice,
+                openPnl: openPnl
+              };
+            });
+
+            allPositions.push(...parsedPositions);
+          } catch (e) {
+            console.error(`Failed to fetch positions for account ${acc.id}`, e);
+          }
+        })
+      );
+
+      setTrades(allTrades);
+      setPositions(allPositions);
+      if (allTrades.length > 0 && !activeTradeId) {
+        setActiveTradeId(allTrades[0].id);
+      }
+    } catch (error) {
+      console.error('Error fetching SnapTrade portfolio data:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [activeTradeId]);
 
   const handleRefresh = async () => {
+    if (!user) return;
     setRefreshing(true);
+    await fetchAllData(user.uid);
+    setRefreshing(false);
+  };
+
+  // Launch SnapTrade Connection Portal
+  const handleOpenConnectionPortal = async () => {
+    if (!user) return;
+    setPortalLoading(true);
+    setPortalError('');
+    setPortalDialogOpen(true);
+
     try {
-      await fetchData(tastyToken || '', selectedAccountId);
-    } catch (error) {
-      console.error('Failed to refresh data:', error);
+      const res = await fetch('/api/snaptrade/portal-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uid: user.uid,
+          connectionType: 'trade-if-available'
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error?.message || data.error || 'Failed to generate SnapTrade Connection Portal link');
+      }
+
+      if (data.redirectURI) {
+        setPortalUrl(data.redirectURI);
+      } else {
+        // Mock fallback prompt
+        setPortalError('SnapTrade API keys are not yet configured in .env. You can add them in Settings or use the Interactive Demo mode.');
+      }
+    } catch (err: any) {
+      setPortalError(err.message || 'Failed to open connection portal');
     } finally {
-      setRefreshing(false);
+      setPortalLoading(false);
     }
   };
 
+  // Disconnect a brokerage
+  const handleDisconnectBroker = async (authorizationId: string) => {
+    if (!user || !confirm('Are you sure you want to disconnect this brokerage?')) return;
+    try {
+      const res = await fetch(`/api/snaptrade/connections/${authorizationId}?uid=${encodeURIComponent(user.uid)}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        fetchAllData(user.uid);
+      }
+    } catch (e) {
+      console.error('Error disconnecting brokerage:', e);
+    }
+  };
+
+  // Save Settings / API Keys
+  const handleSaveSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('/api/snaptrade/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: settingClientId,
+          consumerKey: settingConsumerKey
+        })
+      });
+      if (res.ok) {
+        setSettingsSaved(true);
+        checkStatus();
+        if (user) fetchAllData(user.uid);
+        setTimeout(() => {
+          setSettingsSaved(false);
+          setSettingsDialogOpen(false);
+        }, 1200);
+      }
+    } catch (e) {
+      console.error('Failed to save settings:', e);
+    }
+  };
+
+  // Filter trades and positions based on selected account and search
+  const filteredTrades = useMemo(() => {
+    let list = trades;
+    if (selectedAccountId !== 'ALL') {
+      list = list.filter(t => t.accountId === selectedAccountId);
+    }
+    if (searchFilter.trim()) {
+      const q = searchFilter.toLowerCase();
+      list = list.filter(t => 
+        t.symbol.toLowerCase().includes(q) || 
+        t.brokerName.toLowerCase().includes(q) ||
+        (t.description && t.description.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [trades, selectedAccountId, searchFilter]);
+
+  const filteredPositions = useMemo(() => {
+    let list = positions;
+    if (selectedAccountId !== 'ALL') {
+      list = list.filter(p => p.accountId === selectedAccountId);
+    }
+    if (searchFilter.trim()) {
+      const q = searchFilter.toLowerCase();
+      list = list.filter(p => 
+        p.symbol.toLowerCase().includes(q) || 
+        p.brokerName.toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [positions, selectedAccountId, searchFilter]);
+
+  // Aggregate Portfolio Net Liq & Cash
+  const portfolioSummary = useMemo(() => {
+    const relevantAccounts = selectedAccountId === 'ALL' 
+      ? accounts 
+      : accounts.filter(a => a.id === selectedAccountId);
+
+    const totalNetLiq = relevantAccounts.reduce((sum, a) => sum + (a.balance?.total?.amount || 0), 0);
+    const totalCash = relevantAccounts.reduce((sum, a) => sum + (a.balance?.cash?.amount || 0), 0);
+    const positionsValue = filteredPositions.reduce((sum, p) => sum + p.totalValue, 0);
+
+    return {
+      netLiq: totalNetLiq || positionsValue,
+      cash: totalCash,
+      positionsCount: filteredPositions.length,
+      tradesCount: filteredTrades.length,
+    };
+  }, [accounts, selectedAccountId, filteredPositions, filteredTrades]);
+
+  // ROI Calculator
   const calculateROI = (trade: Trade) => {
     if (trade.status !== 'Closed' || !trade.closePrice || !trade.closeDate) return null;
-    
-    const profit = trade.type === 'Buy' 
+
+    const profit = trade.type === 'Buy'
       ? (trade.closePrice - trade.price) * trade.quantity
       : (trade.price - trade.closePrice) * trade.quantity;
-      
-    const avgROI = (profit / trade.requiredCapital) * 100;
-    const peakROI = (profit / trade.peakCapital) * 100;
-    
+
+    const avgROI = trade.requiredCapital > 0 ? (profit / trade.requiredCapital) * 100 : 0;
+    const peakROI = trade.peakCapital > 0 ? (profit / trade.peakCapital) * 100 : 0;
+
     const daysHeld = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date)) || 1;
     const annualizedROI = avgROI * (365 / daysHeld);
-    
+
     return { profit, avgROI, peakROI, annualizedROI, daysHeld };
   };
 
+  const activeTrade = trades.find(t => t.id === activeTradeId) || filteredTrades[0];
+  const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
+
   if (!isAuthReady) {
     return (
-      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
-        <Activity className="w-8 h-8 text-brand-accent animate-spin" />
-        <div className="mt-4 text-muted-foreground font-mono text-sm">INITIALIZING...</div>
+      <div className="min-h-screen bg-[#0d0e12] flex flex-col items-center justify-center p-4">
+        <Activity className="w-8 h-8 text-indigo-400 animate-spin" />
+        <div className="mt-4 text-slate-400 font-mono text-sm tracking-widest uppercase">INITIALIZING ALPHATRACK...</div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-card border-border">
-          <CardHeader className="text-center">
-            <div className="mx-auto w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center mb-4">
-              <Activity className="w-6 h-6 text-brand-accent" />
+      <div className="min-h-screen bg-[#0d0e12] flex items-center justify-center p-4">
+        <Card className="w-full max-w-md bg-[#13141a] border-slate-800 text-slate-100 shadow-2xl">
+          <CardHeader className="text-center pb-6">
+            <div className="mx-auto w-14 h-14 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-4 border border-indigo-500/20">
+              <TrendingUp className="w-7 h-7 text-indigo-400" />
             </div>
-            <CardTitle className="text-2xl font-bold text-foreground">Alphatrack</CardTitle>
-            <CardDescription className="text-muted-foreground">Log in to link your brokerage account data to the analytics platform.</CardDescription>
+            <CardTitle className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
+              Alphatrack
+            </CardTitle>
+            <CardDescription className="text-slate-400 mt-2 text-sm leading-relaxed">
+              Connect to any brokerage account via SnapTrade. Universal multi-broker portfolio & capital-adjusted ROI tracking.
+            </CardDescription>
           </CardHeader>
-          <CardContent className="flex justify-center pb-8">
-            <Button onClick={handleLogin} size="lg" className="w-full bg-brand-accent hover:bg-brand-accent/90 text-white">
-              <LogIn className="w-4 h-4 mr-2" />
+          <CardContent className="flex flex-col gap-4 pb-8">
+            <Button 
+              onClick={loginWithGoogle} 
+              size="lg" 
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-3 transition-all"
+            >
+              <LogIn className="w-5 h-5" />
               Sign in with Google
             </Button>
+            <div className="flex items-center justify-center gap-2 text-xs text-slate-500 mt-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <span>Supports Tastytrade, Robinhood, Schwab, Fidelity, Webull & 100+ brokers</span>
+            </div>
           </CardContent>
         </Card>
       </div>
     );
   }
 
-  const activeTrade = trades.find(t => t.id === activeTradeId) || trades[0];
-  const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
-  const portfolioCapital = positions.reduce((sum, p) => sum + p.requiredCapital, 0);
-
   return (
-    <div className="h-full flex flex-col font-sans bg-background text-foreground">
-      <header className="h-[64px] px-8 flex items-center justify-between border-b border-border bg-black shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="font-bold tracking-[-1px] text-[20px] text-foreground">ALPHATRACK</div>
-          <div className="bg-success/10 text-success text-[11px] px-[10px] py-1 rounded-full border border-success/20 uppercase tracking-[0.5px]">
-            {user.email}
+    <div className="min-h-screen flex flex-col font-sans bg-[#0d0e12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
+      {/* Top Navigation Bar */}
+      <header className="h-16 px-6 lg:px-8 flex items-center justify-between border-b border-slate-800/80 bg-[#111218]/90 backdrop-blur sticky top-0 z-50">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
+              <TrendingUp className="w-4 h-4 text-indigo-400" />
+            </div>
+            <span className="font-extrabold tracking-tight text-lg text-white">ALPHATRACK</span>
           </div>
+
+          <div className="hidden sm:flex items-center gap-2 bg-slate-800/60 border border-slate-700/50 rounded-full px-3 py-1 text-xs font-mono text-slate-300">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span>SnapTrade Connected</span>
+          </div>
+
           {dbError && (
-            <div className="bg-error/10 text-error text-[11px] px-[10px] py-1 rounded-full border border-error/20 uppercase tracking-[0.5px]">
+            <div className="bg-amber-500/10 text-amber-300 text-xs px-3 py-1 rounded-full border border-amber-500/20">
               {dbError}
             </div>
           )}
         </div>
-        <div className="flex gap-3">
-          {tastyToken && tastyAccounts.length > 1 && (
-            <select
-              title="Select Brokerage Account"
-              className="bg-background border border-border text-foreground px-3 py-2 rounded-md text-[13px] font-semibold cursor-pointer outline-none focus:ring-1 focus:ring-brand-accent/50"
-              value={selectedAccountId || ''}
-              onChange={(e) => {
-                setSelectedAccountId(e.target.value);
-                fetchData(tastyToken, e.target.value);
-              }}
-            >
-              {tastyAccounts.map(acc => {
-                const id = acc.account?.['account-number'] || acc?.['account-number'];
-                const title = acc.account?.['nickname'] || id;
-                return (
-                  <option key={id} value={id}>
-                    {title} ({id})
+
+        <div className="flex items-center gap-3">
+          {/* Account Selector */}
+          {accounts.length > 0 && (
+            <div className="relative">
+              <select
+                aria-label="Select Brokerage Account"
+                className="bg-[#181a22] border border-slate-700/80 hover:border-slate-600 text-slate-200 px-3.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all pr-8 appearance-none"
+                value={selectedAccountId}
+                onChange={(e) => setSelectedAccountId(e.target.value)}
+              >
+                <option value="ALL">🌐 All Accounts ({accounts.length} Brokerages)</option>
+                {accounts.map(acc => (
+                  <option key={acc.id} value={acc.id}>
+                    🏦 {acc.institution_name} • {acc.name || acc.number} (${(acc.balance?.total?.amount || 0).toLocaleString()})
                   </option>
-                );
-              })}
-            </select>
+                ))}
+              </select>
+            </div>
           )}
-          {tastyToken && (
-            <button 
-              onClick={handleRefresh} 
-              disabled={refreshing}
-              className="bg-brand-accent/10 border border-brand-accent/20 text-brand-accent hover:bg-brand-accent/20 px-4 py-2 rounded-md text-[13px] font-semibold cursor-pointer disabled:opacity-50 transition-colors"
-            >
-              {refreshing ? 'Syncing...' : 'Pull Fresh Data'}
-            </button>
-          )}
-          <button 
-            onClick={handleLogout}
-            className="bg-foreground text-background border-none px-4 py-2 rounded-md text-[13px] font-semibold cursor-pointer transition-opacity hover:opacity-80"
+
+          {/* Connect Brokerage Button */}
+          <Button
+            onClick={handleOpenConnectionPortal}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-1.5 h-8 rounded-lg flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
           >
-            Sign Out
-          </button>
+            <PlusCircle className="w-3.5 h-3.5" />
+            <span>Link Broker</span>
+          </Button>
+
+          {/* Refresh Data */}
+          <Button
+            onClick={handleRefresh}
+            disabled={refreshing}
+            variant="outline"
+            className="bg-[#181a22] border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-3 h-8 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
+            <span className="hidden md:inline">{refreshing ? 'Syncing...' : 'Sync'}</span>
+          </Button>
+
+          {/* Manage Connections Modal Trigger */}
+          <Button
+            onClick={() => setConnectionsDialogOpen(true)}
+            variant="outline"
+            className="bg-[#181a22] border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-2.5 h-8 rounded-lg flex items-center gap-1 cursor-pointer transition-all"
+            title="Manage Connected Brokerages"
+          >
+            <Building2 className="w-3.5 h-3.5" />
+            <span className="hidden lg:inline">Brokers ({connections.length || accounts.length})</span>
+          </Button>
+
+          {/* Settings Modal */}
+          <Button
+            onClick={() => setSettingsDialogOpen(true)}
+            variant="outline"
+            className="bg-[#181a22] border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-2.5 h-8 rounded-lg flex items-center cursor-pointer transition-all"
+            title="SnapTrade API Configuration"
+          >
+            <Settings className="w-3.5 h-3.5" />
+          </Button>
+
+          {/* Sign Out */}
+          <Button
+            onClick={logout}
+            variant="ghost"
+            className="text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 text-xs font-medium px-2.5 h-8 rounded-lg cursor-pointer transition-all"
+            title={`Sign out (${user.email})`}
+          >
+            <LogOut className="w-3.5 h-3.5" />
+          </Button>
         </div>
       </header>
 
-      {!tastyToken ? (
+      {/* Main Content Area */}
+      {accounts.length === 0 && !loading ? (
         <main className="flex-1 flex items-center justify-center p-6">
-          <Card className="w-full max-w-md bg-card border-border shadow-2xl">
-            <CardHeader className="text-center pb-4">
-              <div className="mx-auto w-12 h-12 bg-success/10 rounded-full flex items-center justify-center mb-4 border border-success/20">
-                <Database className="w-5 h-5 text-success" />
-              </div>
-              <CardTitle className="text-2xl font-bold text-foreground">Link Brokerage</CardTitle>
-              <CardDescription className="text-muted-foreground mt-2 leading-relaxed">
-                Connect your Tastytrade account to instantly sync your transaction history and power your ROI analytics.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Dialog open={connectDialogOpen} onOpenChange={setConnectDialogOpen}>
-                <DialogTrigger className="w-full bg-success hover:bg-success/90 text-white font-semibold flex items-center justify-center gap-2 rounded-lg py-3 shadow-sm cursor-pointer transition-colors outline-none focus-visible:ring-2 focus-visible:ring-success/50">
-                  <KeyRound className="w-5 h-5" />
-                  Connect Tastytrade 
-                </DialogTrigger>
-                <DialogContent className="bg-card border-border sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle className="text-foreground flex items-center gap-2">
-                      <KeyRound className="w-5 h-5 text-brand-accent" />
-                      Authenticate
-                    </DialogTitle>
-                    <DialogDescription className="text-muted-foreground">
-                      This app proxies your login directly to the Tastyworks API via a secure backend.
-                    </DialogDescription>
-                  </DialogHeader>
-                  <form onSubmit={handleTastyConnect} className="space-y-4 pt-4">
-                    
-                    {/* Mode Toggle Button */}
-                    <div className="flex justify-end mb-2">
-                       <button 
-                         type="button" 
-                         onClick={() => setIsDeveloperMode(!isDeveloperMode)}
-                         className="text-[10px] uppercase font-bold text-brand-accent tracking-wider hover:underline"
-                       >
-                         {isDeveloperMode ? 'Switch to Username Login' : 'Use Developer App Mode'}
-                       </button>
-                    </div>
+          <Card className="w-full max-w-lg bg-[#13141a] border-slate-800/80 shadow-2xl p-6 text-center">
+            <div className="mx-auto w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-indigo-500/20">
+              <Building2 className="w-8 h-8 text-indigo-400" />
+            </div>
+            <CardTitle className="text-2xl font-bold text-white mb-2">Connect Your Brokerage</CardTitle>
+            <CardDescription className="text-slate-400 text-sm leading-relaxed mb-6">
+              Connect your Tastytrade, Robinhood, Charles Schwab, Fidelity, Webull, or Interactive Brokers account via SnapTrade to automatically sync your positions, transactions, and ROI analytics.
+            </CardDescription>
 
-                    {isDeveloperMode ? (
-                      <>
-                        <div className="space-y-2">
-                          <Label htmlFor="clientSecret" className="text-muted-foreground text-xs uppercase tracking-wider">Client Secret</Label>
-                          <Input
-                            id="clientSecret"
-                            required
-                            type="password"
-                            value={tastyClientSecret}
-                            onChange={(e) => setTastyClientSecret(e.target.value)}
-                            className="bg-background border-border text-foreground h-11"
-                            placeholder="Your Tastytrade Developer Client Secret"
-                          />
-                        </div>
-                        <div className="space-y-2 bg-brand-accent/5 p-4 rounded-lg border border-brand-accent/20">
-                          <Label htmlFor="refreshToken" className="text-brand-accent text-xs uppercase tracking-wider font-semibold">Refresh Token</Label>
-                          <p className="text-[10px] text-muted-foreground mb-2">
-                            Found in the Tastytrade Developer Portal alongside your Client ID.
-                          </p>
-                          <Input
-                            id="refreshToken"
-                            required
-                            type="password"
-                            value={tastyRefreshToken}
-                            onChange={(e) => setTastyRefreshToken(e.target.value)}
-                            className="bg-background border-brand-accent/30 focus-visible:ring-brand-accent text-foreground h-11"
-                            placeholder="Your Refresh Token"
-                          />
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="space-y-2">
-                          <Label htmlFor="login" className="text-muted-foreground text-xs uppercase tracking-wider">Username</Label>
-                          <Input
-                            id="login"
-                            required={!isDeveloperMode}
-                            value={tastyLogin}
-                            onChange={(e) => setTastyLogin(e.target.value)}
-                            className="bg-background border-border text-foreground h-11"
-                            placeholder="Tastytrade Username or Email"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="pass" className="text-muted-foreground text-xs uppercase tracking-wider">Password</Label>
-                          <div className="relative">
-                            <Input
-                              id="pass"
-                              type={showPassword ? "text" : "password"}
-                              required={!isDeveloperMode}
-                              value={tastyPassword}
-                              onChange={(e) => setTastyPassword(e.target.value)}
-                              className="bg-background border-border text-foreground h-11 pr-10"
-                              placeholder="••••••••"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => setShowPassword(!showPassword)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                            >
-                              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                            </button>
-                          </div>
-                        </div>
-                        {needsOtp && (
-                          <div className="space-y-2 bg-brand-accent/5 p-4 rounded-lg border border-brand-accent/20">
-                            <Label htmlFor="otp" className="text-brand-accent text-xs uppercase tracking-wider font-semibold">Device Auth Pin (Check Email)</Label>
-                            <Input
-                              id="otp"
-                              required={!isDeveloperMode}
-                              value={tastyOtp}
-                              onChange={(e) => setTastyOtp(e.target.value)}
-                              className="bg-background border-brand-accent/30 focus-visible:ring-brand-accent text-foreground h-11"
-                              placeholder="6-digit PIN"
-                            />
-                          </div>
-                        )}
-                      </>
-                    )}
+            <div className="grid grid-cols-3 gap-2 mb-6">
+              {['Tastytrade', 'Robinhood', 'Charles Schwab', 'Fidelity', 'Webull', 'Interactive Brokers'].map((broker) => (
+                <div key={broker} className="bg-[#181a22] border border-slate-800 rounded-lg p-2 text-xs font-medium text-slate-300">
+                  {broker}
+                </div>
+              ))}
+            </div>
 
-                    {connectError && (
-                      <div className="text-error text-sm p-3 bg-error/10 border border-error/20 rounded-md">
-                        {connectError}
-                      </div>
-                    )}
-                    <Button 
-                      type="submit" 
-                      disabled={connecting}
-                      className="w-full bg-brand-accent hover:bg-brand-accent/90 text-white mt-4 h-11"
-                    >
-                      {connecting ? 'Authenticating...' : 'Secure Login'}
-                    </Button>
-                  </form>
-                </DialogContent>
-              </Dialog>
-              <p className="text-center text-[11px] text-muted-foreground mt-6">
-                Protected by strict Firebase Database isolation rules. Only you can view your data.
-              </p>
-            </CardContent>
+            <Button
+              onClick={handleOpenConnectionPortal}
+              size="lg"
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
+            >
+              <PlusCircle className="w-5 h-5" />
+              Link Brokerage Account
+            </Button>
           </Card>
         </main>
       ) : (
-        <main className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-6 p-6 min-h-0">
-        <section className="flex flex-col min-h-0">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 shrink-0">
-            <div className="bg-card border border-border p-5 rounded-xl">
-              <div className="text-[11px] uppercase text-muted-foreground tracking-[1px] mb-2">Portfolio Net Liq</div>
-              <div className="text-2xl font-semibold font-mono">
-                ${portfolioCapital.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+        <main className="flex-1 flex flex-col p-6 max-w-[1600px] w-full mx-auto gap-6 min-h-0">
+          {/* Top Metric Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                <span>Portfolio Net Liq</span>
+                <Wallet className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="text-2xl font-bold font-mono text-white">
+                ${portfolioSummary.netLiq.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-xs text-slate-500 mt-2">
+                {selectedAccountId === 'ALL' ? `Across ${accounts.length} linked accounts` : 'Selected Account'}
               </div>
             </div>
-            <div className="bg-card border border-border p-5 rounded-xl">
-              <div className="text-[11px] uppercase text-muted-foreground tracking-[1px] mb-2">Total Trades</div>
-              <div className="text-2xl font-semibold font-mono text-brand-accent">{trades.length}</div>
+
+            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                <span>Available Cash</span>
+                <DollarSign className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div className="text-2xl font-bold font-mono text-emerald-400">
+                ${portfolioSummary.cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-xs text-slate-500 mt-2">Ready for deployment</div>
             </div>
-            <div className="bg-card border border-border p-5 rounded-xl">
-              <div className="text-[11px] uppercase text-muted-foreground tracking-[1px] mb-2">Open Positions</div>
-              <div className="text-2xl font-semibold font-mono">{positions.length}</div>
+
+            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                <span>Total Trades</span>
+                <TrendingUp className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="text-2xl font-bold font-mono text-white">
+                {portfolioSummary.tradesCount}
+              </div>
+              <div className="text-xs text-slate-500 mt-2">Synced transaction history</div>
+            </div>
+
+            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
+              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
+                <span>Open Positions</span>
+                <Layers className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="text-2xl font-bold font-mono text-white">
+                {portfolioSummary.positionsCount}
+              </div>
+              <div className="text-xs text-slate-500 mt-2">Active market exposures</div>
             </div>
           </div>
 
-          <div className="bg-card border border-border rounded-xl flex-1 flex flex-col min-h-0 overflow-hidden">
-            <div className="flex-1 overflow-auto">
-              <table className="w-full border-collapse text-left">
-                <thead className="sticky top-0 bg-[#1c1c1f]">
-                  <tr>
-                    <th className="bg-[#1c1c1f] p-3 text-[11px] uppercase text-muted-foreground border-b border-border">Symbol</th>
-                    <th className="bg-[#1c1c1f] p-3 text-[11px] uppercase text-muted-foreground border-b border-border">Trade Type</th>
-                    <th className="bg-[#1c1c1f] p-3 text-[11px] uppercase text-muted-foreground border-b border-border">Status</th>
-                    <th className="bg-[#1c1c1f] p-3 text-[11px] uppercase text-muted-foreground border-b border-border">P/L</th>
-                    <th className="bg-[#1c1c1f] p-3 text-[11px] uppercase text-muted-foreground border-b border-border">Avg Cap ROI</th>
-                    <th className="bg-[#1c1c1f] p-3 text-[11px] uppercase text-muted-foreground border-b border-border">Ann. ROI</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {loading ? (
-                    <tr><td colSpan={6} className="text-center p-8 text-muted-foreground">Loading...</td></tr>
-                  ) : trades.map((trade) => {
-                    const metrics = calculateROI(trade);
-                    return (
-                      <tr 
-                        key={trade.id} 
-                        onClick={() => setActiveTradeId(trade.id)}
-                        className={`cursor-pointer transition-colors hover:bg-muted/50 ${activeTradeId === trade.id ? 'bg-muted/30' : ''}`}
-                      >
-                        <td className="p-3 text-[13px] border-b border-border font-mono font-bold text-brand-accent">{trade.symbol}</td>
-                        <td className="p-3 text-[13px] border-b border-border font-mono">{trade.type}</td>
-                        <td className="p-3 text-[13px] border-b border-border font-mono">
-                          {trade.status === 'Open' ? <span className="text-brand-accent bg-brand-accent/10 px-2 py-0.5 rounded text-[11px]">OPEN</span> : <span className="text-muted-foreground">CLOSED</span>}
-                        </td>
-                        <td className={`p-3 text-[13px] border-b border-border font-mono ${metrics && metrics.profit >= 0 ? 'text-success' : metrics ? 'text-error' : ''}`}>
-                          {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
-                        </td>
-                        <td className="p-3 text-[13px] border-b border-border font-mono">
-                          {metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}
-                        </td>
-                        <td className="p-3 text-[13px] border-b border-border font-mono">
-                          {metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}
-                        </td>
+          {/* Main Grid: Data Table + Trade Inspector Sidebar */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 flex-1 min-h-0">
+            {/* Left Content Table */}
+            <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl flex flex-col min-h-0 overflow-hidden shadow-sm">
+              {/* Header Controls */}
+              <div className="p-4 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 bg-[#111218]">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setActiveTab('trades')}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === 'trades'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                    }`}
+                  >
+                    Trades & ROI History ({filteredTrades.length})
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('positions')}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
+                      activeTab === 'positions'
+                        ? 'bg-indigo-600 text-white shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+                    }`}
+                  >
+                    Open Positions ({filteredPositions.length})
+                  </button>
+                </div>
+
+                <div className="relative w-64">
+                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                  <Input
+                    placeholder="Search symbol, broker..."
+                    value={searchFilter}
+                    onChange={(e) => setSearchFilter(e.target.value)}
+                    className="bg-[#181a22] border-slate-800 text-slate-200 text-xs pl-8 h-9 rounded-lg"
+                  />
+                </div>
+              </div>
+
+              {/* Table Body */}
+              <div className="flex-1 overflow-auto">
+                {activeTab === 'trades' ? (
+                  <table className="w-full border-collapse text-left">
+                    <thead className="sticky top-0 bg-[#161820] z-10">
+                      <tr>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Type</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Realized P/L</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                      {loading ? (
+                        <tr>
+                          <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                            <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
+                            Loading SnapTrade history...
+                          </td>
+                        </tr>
+                      ) : filteredTrades.length === 0 ? (
+                        <tr>
+                          <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                            No trades found matching the current filter.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredTrades.map((trade) => {
+                          const metrics = calculateROI(trade);
+                          const isSelected = activeTradeId === trade.id;
+                          return (
+                            <tr
+                              key={trade.id}
+                              onClick={() => setActiveTradeId(trade.id)}
+                              className={`cursor-pointer transition-colors ${
+                                isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
+                              }`}
+                            >
+                              <td className="p-3.5 font-bold text-indigo-400">{trade.symbol}</td>
+                              <td className="p-3.5 font-sans">
+                                <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
+                                  {trade.brokerName}
+                                </span>
+                              </td>
+                              <td className="p-3.5">
+                                <span className={trade.type === 'Buy' ? 'text-emerald-400' : 'text-amber-400'}>
+                                  {trade.type} {trade.quantity}
+                                </span>
+                              </td>
+                              <td className="p-3.5 text-slate-400">{trade.date}</td>
+                              <td className={`p-3.5 font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
+                              </td>
+                              <td className="p-3.5 text-slate-300">
+                                {metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}
+                              </td>
+                              <td className="p-3.5 text-slate-300">
+                                {metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}
+                              </td>
+                              <td className="p-3.5 text-indigo-300 font-semibold">
+                                {metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                ) : (
+                  <table className="w-full border-collapse text-left">
+                    <thead className="sticky top-0 bg-[#161820] z-10">
+                      <tr>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Open P/L</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                      {filteredPositions.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="text-center p-12 text-slate-500 font-sans">
+                            No open positions found.
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredPositions.map((pos) => (
+                          <tr key={pos.id} className="hover:bg-slate-800/40 transition-colors">
+                            <td className="p-3.5 font-bold text-indigo-400">{pos.symbol}</td>
+                            <td className="p-3.5 font-sans">
+                              <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
+                                {pos.brokerName}
+                              </span>
+                            </td>
+                            <td className="p-3.5 text-slate-300">{pos.quantity}</td>
+                            <td className="p-3.5 text-slate-400">${pos.averagePrice.toFixed(2)}</td>
+                            <td className="p-3.5 text-slate-200 font-semibold">${pos.currentPrice.toFixed(2)}</td>
+                            <td className="p-3.5 font-bold text-white">${pos.totalValue.toFixed(2)}</td>
+                            <td className={`p-3.5 font-bold ${pos.openPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {pos.openPnl >= 0 ? '+' : ''}${pos.openPnl.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                )}
+              </div>
             </div>
+
+            {/* Right Sidebar: Detailed Trade Inspector */}
+            <aside className="flex flex-col gap-6">
+              <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex-1 flex flex-col justify-between">
+                <div>
+                  <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-5">
+                    <span className="text-sm font-bold text-white">Trade ROI Inspector</span>
+                    <Badge variant="outline" className="border-indigo-500/30 text-indigo-400 bg-indigo-500/10 text-[10px]">
+                      SNAPTRADE SYNC
+                    </Badge>
+                  </div>
+
+                  {activeTrade && activeMetrics ? (
+                    <>
+                      <div className="text-xs text-slate-400 mb-4 flex items-center justify-between">
+                        <span>Selected Trade:</span>
+                        <span className="font-semibold text-white">
+                          {activeTrade.symbol} ({activeTrade.brokerName})
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
+                          <div className={`text-xl font-bold font-mono mb-1 ${activeMetrics.avgROI >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {activeMetrics.avgROI >= 0 ? '+' : ''}{activeMetrics.avgROI.toFixed(1)}%
+                          </div>
+                          <div className="text-[10px] uppercase font-medium text-slate-400">Avg Capital ROI</div>
+                        </div>
+
+                        <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
+                          <div className={`text-xl font-bold font-mono mb-1 ${activeMetrics.peakROI >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {activeMetrics.peakROI >= 0 ? '+' : ''}{activeMetrics.peakROI.toFixed(1)}%
+                          </div>
+                          <div className="text-[10px] uppercase font-medium text-slate-400">Peak Capital ROI</div>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 space-y-3 font-mono text-xs border-t border-slate-800/80 pt-4">
+                        <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Execution Date:</span>
+                          <span className="text-slate-200">{activeTrade.date}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
+                          <span className="text-slate-200">${activeTrade.price.toFixed(2)} × {activeTrade.quantity}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Required Capital:</span>
+                          <span className="text-slate-200">${activeTrade.requiredCapital.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
+                          <span className="text-slate-200">${activeTrade.peakCapital.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Realized Gain/Loss:</span>
+                          <span className={activeMetrics.profit >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                            {activeMetrics.profit >= 0 ? '+' : ''}${activeMetrics.profit.toFixed(2)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between border-t border-slate-800/60 pt-2">
+                          <span className="text-slate-400 font-sans">Holding Period:</span>
+                          <span className="text-slate-200">{activeMetrics.daysHeld} days</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Annualized ROI:</span>
+                          <span className="text-indigo-400 font-bold">{activeMetrics.annualizedROI.toFixed(1)}%</span>
+                        </div>
+                      </div>
+
+                      <div className="mt-6 p-4 bg-indigo-500/5 rounded-xl border border-indigo-500/20 text-xs">
+                        <div className="text-indigo-400 font-bold uppercase text-[10px] tracking-wider mb-1 flex items-center gap-1.5">
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          <span>Capital Efficiency Insight</span>
+                        </div>
+                        <p className="text-slate-400 text-[11px] leading-relaxed">
+                          Allocated ${activeTrade.requiredCapital.toLocaleString()} at open. Peak exposure reached ${activeTrade.peakCapital.toLocaleString()}, delivering an annualized yield of {activeMetrics.annualizedROI.toFixed(1)}%.
+                        </p>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="p-8 text-center text-slate-500 text-xs">
+                      Select a trade from the table to view capital-adjusted metrics.
+                    </div>
+                  )}
+                </div>
+              </div>
+            </aside>
           </div>
-        </section>
+        </main>
+      )}
 
-        <aside className="flex flex-col gap-6 overflow-y-auto">
-          <div className="bg-card border border-border rounded-xl p-6 flex-1">
-            <div className="text-[14px] font-semibold mb-5 pb-3 border-b border-border">Trade ROI Comparison</div>
-            
-            {activeTrade && activeMetrics ? (
-              <>
-                <div className="text-[12px] text-muted-foreground mb-2">
-                  Active Analysis: <span className="text-foreground">{activeTrade.symbol} ({activeTrade.date})</span>
-                </div>
-                
-                <div className="grid grid-cols-2 gap-3 mt-5">
-                  <div className="bg-[#1c1c1f] p-4 rounded-lg text-center">
-                    <div className="text-[20px] font-bold text-success mb-1">{activeMetrics.avgROI.toFixed(1)}%</div>
-                    <div className="text-[10px] text-muted-foreground uppercase">Avg Cap ROI</div>
-                  </div>
-                  <div className="bg-[#1c1c1f] p-4 rounded-lg text-center">
-                    <div className="text-[20px] font-bold text-success mb-1">{activeMetrics.peakROI.toFixed(1)}%</div>
-                    <div className="text-[10px] text-muted-foreground uppercase">Peak Cap ROI</div>
-                  </div>
-                </div>
+      {/* SnapTrade Connection Portal Modal */}
+      <Dialog open={portalDialogOpen} onOpenChange={setPortalDialogOpen}>
+        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-2xl h-[80vh] flex flex-col p-0 overflow-hidden">
+          <DialogHeader className="p-4 border-b border-slate-800/80 flex flex-row items-center justify-between shrink-0">
+            <div>
+              <DialogTitle className="text-white text-base font-bold flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-indigo-400" />
+                <span>SnapTrade Connection Portal</span>
+              </DialogTitle>
+              <DialogDescription className="text-slate-400 text-xs mt-0.5">
+                Securely authenticate with your brokerage. SnapTrade connects directly with OAuth and encryption.
+              </DialogDescription>
+            </div>
+          </DialogHeader>
 
-                <div className="mt-8">
-                  <div className="text-[12px] font-semibold mb-2 pb-2 border-b border-border">Capital Usage Summary</div>
-                  <div className="space-y-3 mt-4 text-[13px] font-mono">
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Required Capital:</span>
-                      <span>${activeTrade.requiredCapital.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Peak Capital:</span>
-                      <span>${activeTrade.peakCapital.toFixed(2)}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Profit/Loss:</span>
-                      <span className={activeMetrics.profit >= 0 ? 'text-success' : 'text-error'}>
-                        {activeMetrics.profit >= 0 ? '+' : ''}${activeMetrics.profit.toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between border-t border-border pt-2">
-                      <span className="text-muted-foreground">Days Held:</span>
-                      <span>{activeMetrics.daysHeld}</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-10 p-4 bg-brand-accent/5 rounded-lg border border-dashed border-brand-accent">
-                  <div className="text-[11px] text-brand-accent font-bold mb-1 uppercase">Daily Sync Insight</div>
-                  <p className="text-[12px] leading-[1.4] text-muted-foreground">
-                    Required capital for <span className="text-foreground">{activeTrade.symbol}</span> was {activeTrade.requiredCapital.toLocaleString()} at open. Peak capital reached was {activeTrade.peakCapital.toLocaleString()} extending the true risk exposure.
-                  </p>
-                </div>
-              </>
-            ) : activeTrade && !activeMetrics ? (
-               <div className="text-[13px] text-muted-foreground">
-                 This trade is currently Open. ROI metrics will be available once closed.
-                 <div className="mt-4 font-mono">
-                   Required Capital: ${activeTrade.requiredCapital.toFixed(2)}
-                 </div>
-               </div>
+          <div className="flex-1 min-h-0 bg-[#0d0e12] relative flex flex-col items-center justify-center">
+            {portalLoading ? (
+              <div className="flex flex-col items-center gap-3 p-8">
+                <Activity className="w-8 h-8 text-indigo-400 animate-spin" />
+                <span className="text-xs font-mono text-slate-400">Opening secure portal session...</span>
+              </div>
+            ) : portalUrl ? (
+              <iframe
+                src={portalUrl}
+                title="SnapTrade Connection Portal"
+                className="w-full h-full border-0"
+                allow="clipboard-read; clipboard-write"
+                referrerPolicy="no-referrer"
+              />
             ) : (
-              <div className="text-[13px] text-muted-foreground">Select a closed trade to view detailed analysis.</div>
+              <div className="p-8 text-center max-w-md">
+                <AlertCircle className="w-10 h-10 text-amber-400 mx-auto mb-3" />
+                <h3 className="text-sm font-bold text-white mb-2">SnapTrade Setup</h3>
+                <p className="text-xs text-slate-400 mb-6 leading-relaxed">
+                  {portalError || 'To connect live brokerages, please configure your SnapTrade Client ID and Consumer Key in Settings.'}
+                </p>
+                <div className="flex gap-3 justify-center">
+                  <Button
+                    onClick={() => {
+                      setPortalDialogOpen(false);
+                      setSettingsDialogOpen(true);
+                    }}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4"
+                  >
+                    Open Settings
+                  </Button>
+                  <Button
+                    onClick={() => setPortalDialogOpen(false)}
+                    variant="outline"
+                    className="border-slate-700 text-slate-300 text-xs"
+                  >
+                    Close
+                  </Button>
+                </div>
+              </div>
             )}
           </div>
-        </aside>
-      </main>
-      )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Connected Brokerages Management Dialog */}
+      <Dialog open={connectionsDialogOpen} onOpenChange={setConnectionsDialogOpen}>
+        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-indigo-400" />
+              <span>Connected Brokerages</span>
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 text-xs">
+              Manage your linked institutions and connections across SnapTrade.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3 my-4 max-h-[50vh] overflow-y-auto">
+            {connections.length === 0 && accounts.length === 0 ? (
+              <div className="text-center p-6 text-slate-500 text-xs">
+                No brokerages connected yet.
+              </div>
+            ) : (
+              (connections.length > 0 ? connections : accounts).map((item: any) => {
+                const title = item.brokerage?.name || item.institution_name || 'Brokerage Connection';
+                const id = item.id;
+                return (
+                  <div key={id} className="bg-[#181a22] border border-slate-800/80 p-3.5 rounded-xl flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-lg bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center font-bold text-indigo-400 text-xs">
+                        {title.slice(0, 2).toUpperCase()}
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-white">{title}</div>
+                        <div className="text-[10px] text-slate-400 font-mono">ID: {id.slice(0, 16)}...</div>
+                      </div>
+                    </div>
+
+                    <Button
+                      onClick={() => handleDisconnectBroker(id)}
+                      variant="ghost"
+                      size="sm"
+                      className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 h-8 px-2.5 text-xs"
+                      title="Disconnect Brokerage"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 mr-1" />
+                      Unlink
+                    </Button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <div className="flex gap-2 justify-end pt-2 border-t border-slate-800/80">
+            <Button
+              onClick={() => {
+                setConnectionsDialogOpen(false);
+                handleOpenConnectionPortal();
+              }}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-9"
+            >
+              <PlusCircle className="w-4 h-4 mr-1.5" />
+              Link Another Brokerage
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* SnapTrade API Keys Settings Dialog */}
+      <Dialog open={settingsDialogOpen} onOpenChange={setSettingsDialogOpen}>
+        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-white flex items-center gap-2">
+              <Key className="w-5 h-5 text-indigo-400" />
+              <span>SnapTrade API Credentials</span>
+            </DialogTitle>
+            <DialogDescription className="text-slate-400 text-xs">
+              Get your Client ID and Consumer Key from the{' '}
+              <a 
+                href="https://dashboard.snaptrade.com/api-key" 
+                target="_blank" 
+                rel="noreferrer" 
+                className="text-indigo-400 hover:underline inline-flex items-center gap-0.5"
+              >
+                SnapTrade Dashboard <ExternalLink className="w-3 h-3 ml-0.5 inline" />
+              </a>
+            </DialogDescription>
+          </DialogHeader>
+
+          <form onSubmit={handleSaveSettings} className="space-y-4 my-2">
+            <div className="bg-slate-800/40 p-3 rounded-lg border border-slate-800 text-xs flex items-center justify-between">
+              <span className="text-slate-400">Current Mode:</span>
+              <span className="font-semibold text-indigo-300">{apiStatus.mode}</span>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="snapClientId" className="text-xs uppercase text-slate-400 font-semibold tracking-wider">
+                SnapTrade Client ID
+              </Label>
+              <Input
+                id="snapClientId"
+                required
+                placeholder="e.g. YOUR_CLIENT_ID"
+                value={settingClientId}
+                onChange={(e) => setSettingClientId(e.target.value)}
+                className="bg-[#181a22] border-slate-800 text-white text-xs h-10 font-mono"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <Label htmlFor="snapConsumerKey" className="text-xs uppercase text-slate-400 font-semibold tracking-wider">
+                SnapTrade Consumer Key
+              </Label>
+              <Input
+                id="snapConsumerKey"
+                type="password"
+                required
+                placeholder="••••••••••••••••••••••••"
+                value={settingConsumerKey}
+                onChange={(e) => setSettingConsumerKey(e.target.value)}
+                className="bg-[#181a22] border-slate-800 text-white text-xs h-10 font-mono"
+              />
+            </div>
+
+            {settingsSaved && (
+              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-3 rounded-lg text-xs flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4" />
+                <span>Credentials saved successfully!</span>
+              </div>
+            )}
+
+            <div className="flex gap-2 justify-end pt-3 border-t border-slate-800/80">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setSettingsDialogOpen(false)}
+                className="border-slate-700 text-slate-300 text-xs h-10"
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-10 px-5"
+              >
+                Save & Connect
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
+
 

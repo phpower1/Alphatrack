@@ -1,0 +1,6 @@
+node_modules
+dist
+.git
+.env
+.snaptrade_users.json
+npm-debug.log

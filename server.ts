@@ -1,8 +1,315 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import fs from "fs";
 import cors from "cors";
-import axios from "axios";
+import dotenv from "dotenv";
+import { Snaptrade, SnaptradeAuth, CommercialApiKeyAuth } from "snaptrade-typescript-sdk";
+
+dotenv.config();
+
+// User storage file for caching SnapTrade userSecrets per Firebase UID
+const USERS_CACHE_FILE = path.join(process.cwd(), ".snaptrade_users.json");
+
+function loadUsersCache(): Record<string, { userId: string; userSecret: string }> {
+  try {
+    if (fs.existsSync(USERS_CACHE_FILE)) {
+      const data = fs.readFileSync(USERS_CACHE_FILE, "utf-8");
+      return JSON.parse(data);
+    }
+  } catch (err) {
+    console.error("Error reading users cache file:", err);
+  }
+  return {};
+}
+
+function saveUsersCache(cache: Record<string, { userId: string; userSecret: string }>) {
+  try {
+    fs.writeFileSync(USERS_CACHE_FILE, JSON.stringify(cache, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Error saving users cache file:", err);
+  }
+}
+
+let userSecretsCache = loadUsersCache();
+
+// SnapTrade Client Configuration
+let snaptradeClientId = process.env.SNAPTRADE_CLIENT_ID || "";
+let snaptradeConsumerKey = process.env.SNAPTRADE_CONSUMER_KEY || "";
+
+function getSnapTradeClient(): Snaptrade<CommercialApiKeyAuth> | null {
+  if (!snaptradeClientId || !snaptradeConsumerKey) {
+    return null;
+  }
+  return new Snaptrade({
+    auth: SnaptradeAuth.commercialApiKey({
+      clientId: snaptradeClientId,
+      consumerKey: snaptradeConsumerKey,
+    }),
+  });
+}
+
+// Fallback Mock Data for demo/unconnected states
+const MOCK_ACCOUNTS = [
+  {
+    id: "mock-acc-tasty-01",
+    brokerage_authorization: "mock-auth-01",
+    name: "Tastytrade Margin",
+    number: "5W881234",
+    institution_name: "Tastytrade",
+    created_date: "2025-01-10T12:00:00Z",
+    sync_status: { initial_sync_completed: true },
+    balance: {
+      total: { amount: 48520.50, currency: "USD" },
+      cash: { amount: 14250.00, currency: "USD" }
+    }
+  },
+  {
+    id: "mock-acc-rh-02",
+    brokerage_authorization: "mock-auth-02",
+    name: "Robinhood Individual",
+    number: "RH-9482103",
+    institution_name: "Robinhood",
+    created_date: "2025-02-15T09:30:00Z",
+    sync_status: { initial_sync_completed: true },
+    balance: {
+      total: { amount: 32180.75, currency: "USD" },
+      cash: { amount: 8900.20, currency: "USD" }
+    }
+  },
+  {
+    id: "mock-acc-schwab-03",
+    brokerage_authorization: "mock-auth-03",
+    name: "Schwab Roth IRA",
+    number: "CS-4410982",
+    institution_name: "Charles Schwab",
+    created_date: "2024-11-01T15:00:00Z",
+    sync_status: { initial_sync_completed: true },
+    balance: {
+      total: { amount: 76430.00, currency: "USD" },
+      cash: { amount: 5200.00, currency: "USD" }
+    }
+  }
+];
+
+const MOCK_ACTIVITIES: Record<string, any[]> = {
+  "mock-acc-tasty-01": [
+    {
+      id: "act-t1",
+      trade_date: "2026-08-01",
+      settlement_date: "2026-08-03",
+      type: "BUY",
+      symbol: { symbol: "NVDA", description: "NVIDIA Corporation" },
+      units: 25,
+      price: 118.50,
+      amount: -2962.50,
+      fee: 1.00,
+      description: "BOT 25 NVDA @ 118.50"
+    },
+    {
+      id: "act-t2",
+      trade_date: "2026-08-10",
+      settlement_date: "2026-08-12",
+      type: "SELL",
+      symbol: { symbol: "NVDA", description: "NVIDIA Corporation" },
+      units: -25,
+      price: 128.20,
+      amount: 3205.00,
+      fee: 1.05,
+      description: "SLD 25 NVDA @ 128.20"
+    },
+    {
+      id: "act-t3",
+      trade_date: "2026-07-15",
+      settlement_date: "2026-07-17",
+      type: "BUY",
+      symbol: { symbol: "SPY", description: "SPDR S&P 500 ETF Trust" },
+      units: 10,
+      price: 545.00,
+      amount: -5450.00,
+      fee: 0,
+      description: "BOT 10 SPY @ 545.00"
+    },
+    {
+      id: "act-t4",
+      trade_date: "2026-08-05",
+      settlement_date: "2026-08-07",
+      type: "SELL",
+      symbol: { symbol: "SPY", description: "SPDR S&P 500 ETF Trust" },
+      units: -10,
+      price: 560.80,
+      amount: 5608.00,
+      fee: 0.15,
+      description: "SLD 10 SPY @ 560.80"
+    },
+    {
+      id: "act-t5",
+      trade_date: "2026-08-12",
+      settlement_date: "2026-08-14",
+      type: "BUY",
+      symbol: { symbol: "TSLA", description: "Tesla Inc" },
+      units: 15,
+      price: 215.00,
+      amount: -3225.00,
+      fee: 1.00,
+      description: "BOT 15 TSLA @ 215.00"
+    }
+  ],
+  "mock-acc-rh-02": [
+    {
+      id: "act-r1",
+      trade_date: "2026-07-20",
+      settlement_date: "2026-07-22",
+      type: "BUY",
+      symbol: { symbol: "AAPL", description: "Apple Inc" },
+      units: 30,
+      price: 218.00,
+      amount: -6540.00,
+      fee: 0,
+      description: "Market Buy AAPL"
+    },
+    {
+      id: "act-r2",
+      trade_date: "2026-08-08",
+      settlement_date: "2026-08-10",
+      type: "SELL",
+      symbol: { symbol: "AAPL", description: "Apple Inc" },
+      units: -30,
+      price: 226.40,
+      amount: 6792.00,
+      fee: 0.05,
+      description: "Market Sell AAPL"
+    },
+    {
+      id: "act-r3",
+      trade_date: "2026-08-02",
+      settlement_date: "2026-08-04",
+      type: "BUY",
+      symbol: { symbol: "MSFT", description: "Microsoft Corp" },
+      units: 12,
+      price: 430.00,
+      amount: -5160.00,
+      fee: 0,
+      description: "Market Buy MSFT"
+    }
+  ],
+  "mock-acc-schwab-03": [
+    {
+      id: "act-s1",
+      trade_date: "2026-06-10",
+      settlement_date: "2026-06-12",
+      type: "BUY",
+      symbol: { symbol: "QQQ", description: "Invesco QQQ Trust" },
+      units: 40,
+      price: 470.00,
+      amount: -18800.00,
+      fee: 0,
+      description: "BOUGHT 40 QQQ"
+    },
+    {
+      id: "act-s2",
+      trade_date: "2026-07-28",
+      settlement_date: "2026-07-30",
+      type: "SELL",
+      symbol: { symbol: "QQQ", description: "Invesco QQQ Trust" },
+      units: -40,
+      price: 492.50,
+      amount: 19700.00,
+      fee: 0.20,
+      description: "SOLD 40 QQQ"
+    }
+  ]
+};
+
+const MOCK_POSITIONS: Record<string, any[]> = {
+  "mock-acc-tasty-01": [
+    {
+      symbol: { symbol: "TSLA", description: "Tesla Inc" },
+      units: 15,
+      price: 222.40,
+      average_purchase_price: 215.00,
+      open_pnl: 111.00
+    },
+    {
+      symbol: { symbol: "AMD", description: "Advanced Micro Devices" },
+      units: 50,
+      price: 148.50,
+      average_purchase_price: 142.00,
+      open_pnl: 325.00
+    }
+  ],
+  "mock-acc-rh-02": [
+    {
+      symbol: { symbol: "MSFT", description: "Microsoft Corp" },
+      units: 12,
+      price: 442.10,
+      average_purchase_price: 430.00,
+      open_pnl: 145.20
+    },
+    {
+      symbol: { symbol: "AMZN", description: "Amazon.com Inc" },
+      units: 20,
+      price: 185.00,
+      average_purchase_price: 180.50,
+      open_pnl: 90.00
+    }
+  ],
+  "mock-acc-schwab-03": [
+    {
+      symbol: { symbol: "VOO", description: "Vanguard S&P 500 ETF" },
+      units: 110,
+      price: 512.30,
+      average_purchase_price: 485.00,
+      open_pnl: 3003.00
+    }
+  ]
+};
+
+async function getOrRegisterUser(snaptrade: Snaptrade<CommercialApiKeyAuth>, uid: string): Promise<{ userId: string; userSecret: string }> {
+  const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, "_");
+  const snapTradeUserId = `alphatrack_${safeUid}`;
+
+  if (userSecretsCache[uid] && userSecretsCache[uid].userSecret) {
+    return userSecretsCache[uid];
+  }
+
+  try {
+    console.log(`[SnapTrade] Registering user in SnapTrade: ${snapTradeUserId}`);
+    const regRes = await snaptrade.authentication.registerSnapTradeUser({
+      userId: snapTradeUserId,
+    });
+
+    const userSecret = regRes.data.userSecret || "";
+    userSecretsCache[uid] = {
+      userId: snapTradeUserId,
+      userSecret,
+    };
+    saveUsersCache(userSecretsCache);
+    return userSecretsCache[uid];
+  } catch (error: any) {
+    console.warn(`[SnapTrade] Registration returned error/already exists:`, error.response?.data || error.message);
+    if (userSecretsCache[uid]) {
+      return userSecretsCache[uid];
+    }
+    try {
+      console.log(`[SnapTrade] Attempting to reset user secret for: ${snapTradeUserId}`);
+      const resetRes = await snaptrade.authentication.resetSnapTradeUserSecret({
+        userId: snapTradeUserId,
+        userSecret: "",
+      });
+      const userSecret = resetRes.data.userSecret || "";
+      userSecretsCache[uid] = {
+        userId: snapTradeUserId,
+        userSecret,
+      };
+      saveUsersCache(userSecretsCache);
+      return userSecretsCache[uid];
+    } catch (resetErr: any) {
+      console.error("[SnapTrade] Failed to reset user secret:", resetErr.response?.data || resetErr.message);
+      throw error;
+    }
+  }
+}
 
 async function startServer() {
   const app = express();
@@ -11,160 +318,258 @@ async function startServer() {
   app.use(cors());
   app.use(express.json());
 
-  const TASTY_BASE_URL = "https://api.tastyworks.com"; // Production Tastyworks API
-  const TASTY_OAUTH_URL = "https://api.tastytrade.com"; // Newer Tastytrade OAuth Domain
-
-  const TASTY_CLIENT_ID = process.env.TASTYTRADE_CLIENT_ID || "c8f263c2-f7a9-4e98-b940-59b2eb0ba34b";
-  const TASTY_CLIENT_SECRET = process.env.TASTYTRADE_CLIENT_SECRET || "3f851f707017fb8914f1f3005f8aaa567197ab5e";
-  
-  // NOTE: You must add this exact URI to your Tastytrade Developer Dashboard under "Redirect URIs"
-  const TASTY_REDIRECT_URI = process.env.TASTYTRADE_REDIRECT_URI || "https://tastytrade-analytics-j6cuv4cgma-uc.a.run.app/api/tastytrade/callback";
-  
-  const TASTY_USER_AGENT = "Alphatrack/1.0";
-
-  // API routes FIRST
+  // 1. Health check
   app.get("/api/health", (req, res) => {
-    res.json({ status: "ok" });
+    res.json({
+      status: "ok",
+      provider: "SnapTrade",
+      configured: Boolean(snaptradeClientId && snaptradeConsumerKey)
+    });
   });
 
-  // 1. Connect / Create Session
-  app.post("/api/tt/connect", async (req, res) => {
-    console.log("--> Express received POST /api/tt/connect");
+  // 2. Status & Configuration info
+  app.get("/api/snaptrade/status", (req, res) => {
+    const isConfigured = Boolean(snaptradeClientId && snaptradeConsumerKey);
+    res.json({
+      isConfigured,
+      clientIdMasked: snaptradeClientId ? `${snaptradeClientId.slice(0, 4)}...${snaptradeClientId.slice(-4)}` : null,
+      mode: isConfigured ? "Live SnapTrade API" : "Interactive Demo Mode (Mock Brokerages)"
+    });
+  });
+
+  // 3. Update SnapTrade Credentials dynamically
+  app.post("/api/snaptrade/configure", (req, res) => {
+    const { clientId, consumerKey } = req.body;
+    if (!clientId || !consumerKey) {
+      return res.status(400).json({ error: "clientId and consumerKey are required" });
+    }
+    snaptradeClientId = clientId.trim();
+    snaptradeConsumerKey = consumerKey.trim();
+    console.log(`[SnapTrade] Updated credentials. Client ID: ${snaptradeClientId.slice(0, 4)}...`);
+    res.json({ success: true, isConfigured: true });
+  });
+
+  // 4. Generate Connection Portal Login Link
+  app.post("/api/snaptrade/portal-url", async (req, res) => {
+    const { uid, broker, immediateRedirect, customRedirect, connectionType } = req.body;
+    if (!uid) {
+      return res.status(400).json({ error: "Missing user UID" });
+    }
+
+    const snaptrade = getSnapTradeClient();
+    if (!snaptrade) {
+      return res.json({
+        isMock: true,
+        redirectURI: null,
+        message: "SnapTrade API keys not configured. Operating in simulated multi-broker mode."
+      });
+    }
+
     try {
-      const { userIdentifier, secretToken, otpCode, isDeveloperMode, clientSecret, refreshToken } = req.body;
-      
-      // Developer API Route (Using Client Secret + Refresh Token)
-      if (isDeveloperMode) {
-        if (!clientSecret || !refreshToken) {
-          return res.status(400).json({ error: "Client Secret and Refresh Token are required in Developer Mode." });
-        }
-        
-        const payload = {
-          refresh_token: refreshToken,
-          client_secret: clientSecret,
-          grant_type: 'refresh_token'
-        };
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      console.log(`[SnapTrade] Generating portal login URL for user: ${userId}`);
 
-        const response = await axios.post(`${TASTY_BASE_URL}/oauth/token`, payload, {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Accept': 'application/json'
-          }
-        });
-
-        // The OAuth token response returns { access_token: "..." } whereas old sessions return { "session-token": "..." }
-        // We MUST prefix it with "Bearer " so the proxy routes pass it correctly to the Tastytrade API
-        return res.json({
-          "session-token": `Bearer ${response.data.access_token}`,
-          ...response.data
-        });
-      }
-
-      // Standard Legacy Retail Login
-      if (!userIdentifier || !secretToken) {
-        return res.status(400).json({ error: "Login and password required" });
-      }
-
-      const payload: any = {
-        login: userIdentifier,
-        password: secretToken,
-        rememberMe: true
-      };
-
-      if (otpCode) {
-        payload["remember-token"] = otpCode;
-        payload["two-factor-token"] = otpCode;
-      }
-
-      const response = await axios.post(`${TASTY_BASE_URL}/sessions`, payload, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-          'Accept': 'application/json'
-        }
+      const loginRes = await snaptrade.authentication.loginSnapTradeUser({
+        userId,
+        userSecret,
+        broker: broker || undefined,
+        immediateRedirect: immediateRedirect || false,
+        customRedirect: customRedirect || undefined,
+        connectionType: (connectionType as any) || "read",
+        showCloseButton: true,
       });
 
-      res.json(response.data.data); // Contains session-token
-    } catch (error: any) {
-      console.error("Tastytrade Session Error:", typeof error.response?.data === 'string' ? error.response?.data.substring(0, 100) : error.response?.data || error.message);
-      const status = error.response?.status || 500;
-      let errorData = error.response?.data;
-      
-      // Ensure we always return an object with an error message
-      if (typeof errorData === 'string') {
-        errorData = { error: { message: `Gateway Error (${status}): ` + errorData.substring(0, 150) } };
-      } else if (!errorData) {
-        errorData = { error: { message: "Failed to authenticate with Tastytrade" } };
-      }
+      const responseData: any = loginRes.data;
+      const redirectURI = responseData.redirectURI || responseData.loginRedirectURI;
 
-      res.status(status).json(errorData);
+      res.json({
+        redirectURI,
+        sessionId: responseData.sessionId,
+        userId
+      });
+    } catch (error: any) {
+      console.error("[SnapTrade] Error generating portal link:", error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to generate SnapTrade Connection Portal URL" });
     }
   });
 
-  // 2. Get Accounts
-  app.get("/api/tastytrade/accounts", async (req, res) => {
-    console.log("--> Express received GET /api/tastytrade/accounts");
-    try {
-      const token = req.headers.authorization;
-      if (!token) return res.status(401).json({ error: "Missing session token" });
+  // 5. Get All Connected Accounts for User
+  app.get("/api/snaptrade/accounts", async (req, res) => {
+    const uid = (req.query.uid as string) || "";
+    const snaptrade = getSnapTradeClient();
 
-      const response = await axios.get(`${TASTY_BASE_URL}/customers/me/accounts`, {
-        headers: { 
-          Authorization: token,
-          'User-Agent': TASTY_USER_AGENT,
-          'Accept': 'application/json'
-        }
+    if (!snaptrade || !uid) {
+      return res.json({
+        isMock: !snaptrade,
+        items: MOCK_ACCOUNTS
+      });
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      const accRes = await snaptrade.accountInformation.listUserAccounts({
+        userId,
+        userSecret,
       });
 
-      console.log("Success fetching accounts. Found:", response.data.data?.items?.length || 0);
-      res.json(response.data.data);
+      const accounts = accRes.data || [];
+      console.log(`[SnapTrade] Fetched ${accounts.length} accounts for user ${userId}`);
+
+      res.json({
+        isMock: false,
+        items: accounts.length > 0 ? accounts : []
+      });
     } catch (error: any) {
-      console.error("Error fetching accounts:", error.message, error.code, error.response?.status, error.response?.data);
-      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch accounts" });
+      console.error("[SnapTrade] Error listing user accounts:", error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to list accounts" });
     }
   });
 
-  // 3. Get Transactions / Trades
-  app.get("/api/tastytrade/accounts/:accountId/transactions", async (req, res) => {
-    console.log(`--> Express received GET /api/tastytrade/accounts/${req.params.accountId}/transactions`);
-    try {
-      const token = req.headers.authorization;
-      const { accountId } = req.params;
-      if (!token) return res.status(401).json({ error: "Missing session token" });
+  // 6. Get Account Activities / Transactions
+  app.get("/api/snaptrade/accounts/:accountId/activities", async (req, res) => {
+    const { accountId } = req.params;
+    const uid = (req.query.uid as string) || "";
+    const startDate = (req.query.startDate as string) || undefined;
+    const endDate = (req.query.endDate as string) || undefined;
 
-      const response = await axios.get(`${TASTY_BASE_URL}/accounts/${accountId}/transactions`, {
-        headers: { 
-          Authorization: token,
-          'User-Agent': TASTY_USER_AGENT,
-          'Accept': 'application/json'
-        }
+    const snaptrade = getSnapTradeClient();
+    if (!snaptrade || !uid || accountId.startsWith("mock-")) {
+      const activities = MOCK_ACTIVITIES[accountId] || [];
+      return res.json({
+        isMock: true,
+        data: activities
+      });
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      const actRes = await snaptrade.accountInformation.getAccountActivities({
+        accountId,
+        userId,
+        userSecret,
+        startDate,
+        endDate,
       });
 
-      console.log(`Success fetching transactions for ${accountId}. Found:`, response.data.data?.items?.length || 0);
-      res.json(response.data.data);
+      const activitiesData: any = actRes.data;
+      const items = Array.isArray(activitiesData) ? activitiesData : (activitiesData.data || activitiesData.items || []);
+      res.json({
+        isMock: false,
+        data: items
+      });
     } catch (error: any) {
-      console.error(`Error fetching transactions for ${req.params.accountId}:`, error.message, error.code, error.response?.status, error.response?.data);
-      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch transactions" });
+      console.error(`[SnapTrade] Error fetching activities for ${accountId}:`, error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch activities" });
     }
   });
 
-  // 4. Get Balances
-  app.get("/api/tastytrade/accounts/:accountId/balances", async (req, res) => {
-    try {
-      const token = req.headers.authorization;
-      const { accountId } = req.params;
-      if (!token) return res.status(401).json({ error: "Missing session token" });
+  // 7. Get Account Positions
+  app.get("/api/snaptrade/accounts/:accountId/positions", async (req, res) => {
+    const { accountId } = req.params;
+    const uid = (req.query.uid as string) || "";
 
-      const response = await axios.get(`${TASTY_BASE_URL}/accounts/${accountId}/balances`, {
-        headers: { 
-          Authorization: token,
-          'User-Agent': TASTY_USER_AGENT,
-          'Accept': 'application/json'
-        }
+    const snaptrade = getSnapTradeClient();
+    if (!snaptrade || !uid || accountId.startsWith("mock-")) {
+      const positions = MOCK_POSITIONS[accountId] || [];
+      return res.json({
+        isMock: true,
+        positions
+      });
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      const posRes = await snaptrade.accountInformation.getAllAccountPositions({
+        accountId,
+        userId,
+        userSecret,
       });
 
-      res.json(response.data.data);
+      const posData: any = posRes.data;
+      const positions = Array.isArray(posData) ? posData : (posData.positions || []);
+      res.json({
+        isMock: false,
+        positions
+      });
     } catch (error: any) {
-      res.status(error.response?.status || 500).json(error.response?.data || { error: "Failed to fetch balances" });
+      console.error(`[SnapTrade] Error fetching positions for ${accountId}:`, error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch positions" });
+    }
+  });
+
+  // 8. Get Account Balances
+  app.get("/api/snaptrade/accounts/:accountId/balances", async (req, res) => {
+    const { accountId } = req.params;
+    const uid = (req.query.uid as string) || "";
+
+    const snaptrade = getSnapTradeClient();
+    if (!snaptrade || !uid || accountId.startsWith("mock-")) {
+      const acc = MOCK_ACCOUNTS.find(a => a.id === accountId);
+      return res.json(acc?.balance || { total: { amount: 0, currency: "USD" }, cash: { amount: 0, currency: "USD" } });
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      const balRes = await snaptrade.accountInformation.getUserAccountBalance({
+        accountId,
+        userId,
+        userSecret,
+      });
+
+      res.json(balRes.data);
+    } catch (error: any) {
+      console.error(`[SnapTrade] Error fetching balances for ${accountId}:`, error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to fetch balances" });
+    }
+  });
+
+  // 9. List Brokerage Authorizations / Connections
+  app.get("/api/snaptrade/connections", async (req, res) => {
+    const uid = (req.query.uid as string) || "";
+    const snaptrade = getSnapTradeClient();
+
+    if (!snaptrade || !uid) {
+      return res.json([
+        { id: "mock-auth-01", brokerage: { name: "Tastytrade", slug: "TASTYWORKS" }, disabled: false },
+        { id: "mock-auth-02", brokerage: { name: "Robinhood", slug: "ROBINHOOD" }, disabled: false },
+        { id: "mock-auth-03", brokerage: { name: "Charles Schwab", slug: "SCHWAB" }, disabled: false }
+      ]);
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      const connRes = await snaptrade.connections.listBrokerageAuthorizations({
+        userId,
+        userSecret,
+      });
+      res.json(connRes.data || []);
+    } catch (error: any) {
+      console.error("[SnapTrade] Error listing connections:", error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to list connections" });
+    }
+  });
+
+  // 10. Delete / Disconnect Brokerage Connection
+  app.delete("/api/snaptrade/connections/:authorizationId", async (req, res) => {
+    const { authorizationId } = req.params;
+    const uid = (req.query.uid as string) || "";
+    const snaptrade = getSnapTradeClient();
+
+    if (!snaptrade || !uid) {
+      return res.json({ success: true, message: "Mock connection disconnected" });
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      await snaptrade.connections.deleteConnection({
+        connectionId: authorizationId,
+        userId,
+        userSecret,
+      });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error(`[SnapTrade] Error deleting connection ${authorizationId}:`, error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to disconnect brokerage" });
     }
   });
 
@@ -191,7 +596,9 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`SnapTrade status: ${snaptradeClientId ? 'Configured (' + snaptradeClientId.slice(0, 4) + '...)' : 'Unset (Running in Demo/Mock mode)'}`);
   });
 }
 
 startServer();
+
