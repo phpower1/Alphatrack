@@ -4,11 +4,40 @@ import path from "path";
 import fs from "fs";
 import cors from "cors";
 import dotenv from "dotenv";
+import admin from "firebase-admin";
+import { getFirestore } from "firebase-admin/firestore";
 import { Snaptrade, SnaptradeAuth, CommercialApiKeyAuth } from "snaptrade-typescript-sdk";
 
 dotenv.config();
 
-// User storage file for caching SnapTrade userSecrets per Firebase UID
+// Firebase Admin & Firestore initialization for persistent credential storage
+let firestoreDb: admin.firestore.Firestore | null = null;
+try {
+  const configPath = path.join(process.cwd(), "firebase-applet-config.json");
+  let projectId = process.env.FIREBASE_PROJECT_ID || "alphatrack-87d15";
+  let databaseId = "(default)";
+  if (fs.existsSync(configPath)) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+      if (cfg.projectId) projectId = cfg.projectId;
+      if (cfg.firestoreDatabaseId && cfg.firestoreDatabaseId !== "(default)") {
+        databaseId = cfg.firestoreDatabaseId;
+      }
+    } catch (e) {}
+  }
+  const app = admin.apps.length > 0 && admin.apps[0]
+    ? admin.apps[0]
+    : admin.initializeApp({ projectId });
+
+  firestoreDb = databaseId && databaseId !== "(default)"
+    ? getFirestore(app, databaseId)
+    : getFirestore(app);
+  console.log(`[Firestore Admin] Initialized persistent storage with database: ${databaseId}`);
+} catch (err) {
+  console.warn("[Firestore Admin] Fallback to local cache file storage:", err);
+}
+
+// User storage file for local caching SnapTrade userSecrets per Firebase UID
 const USERS_CACHE_FILE = path.join(process.cwd(), ".snaptrade_users.json");
 
 function loadUsersCache(): Record<string, { userId: string; userSecret: string }> {
@@ -32,6 +61,35 @@ function saveUsersCache(cache: Record<string, { userId: string; userSecret: stri
 }
 
 let userSecretsCache = loadUsersCache();
+
+async function loadUserFromFirestore(uid: string): Promise<{ userId: string; userSecret: string } | null> {
+  if (!firestoreDb) return null;
+  try {
+    const docSnap = await firestoreDb.collection("snaptrade_users").doc(uid).get();
+    if (docSnap.exists) {
+      const data = docSnap.data();
+      if (data?.userId && data?.userSecret) {
+        return { userId: data.userId, userSecret: data.userSecret };
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Firestore Admin] Could not read user ${uid}:`, err.message);
+  }
+  return null;
+}
+
+async function saveUserToFirestore(uid: string, data: { userId: string; userSecret: string }) {
+  if (!firestoreDb) return;
+  try {
+    await firestoreDb.collection("snaptrade_users").doc(uid).set({
+      ...data,
+      updatedAt: new Date().toISOString()
+    }, { merge: true });
+    console.log(`[Firestore Admin] Persisted SnapTrade credentials for user ${uid}`);
+  } catch (err: any) {
+    console.warn(`[Firestore Admin] Could not save user ${uid}:`, err.message);
+  }
+}
 
 // SnapTrade Client Configuration
 let snaptradeClientId = process.env.SNAPTRADE_CLIENT_ID || "";
@@ -269,10 +327,28 @@ async function getOrRegisterUser(snaptrade: Snaptrade<CommercialApiKeyAuth>, uid
   const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, "_");
   const snapTradeUserId = `alphatrack_${safeUid}`;
 
+  // 1. Check in-memory cache
   if (userSecretsCache[uid] && userSecretsCache[uid].userSecret) {
     return userSecretsCache[uid];
   }
 
+  // 2. Check persistent Firestore database
+  const firestoreUser = await loadUserFromFirestore(uid);
+  if (firestoreUser && firestoreUser.userSecret) {
+    userSecretsCache[uid] = firestoreUser;
+    saveUsersCache(userSecretsCache);
+    return firestoreUser;
+  }
+
+  // 3. Check local file cache
+  const localCache = loadUsersCache();
+  if (localCache[uid] && localCache[uid].userSecret) {
+    userSecretsCache[uid] = localCache[uid];
+    await saveUserToFirestore(uid, localCache[uid]);
+    return localCache[uid];
+  }
+
+  // 4. Register new user in SnapTrade
   try {
     console.log(`[SnapTrade] Registering user in SnapTrade: ${snapTradeUserId}`);
     const regRes = await snaptrade.authentication.registerSnapTradeUser({
@@ -280,32 +356,38 @@ async function getOrRegisterUser(snaptrade: Snaptrade<CommercialApiKeyAuth>, uid
     });
 
     const userSecret = regRes.data.userSecret || "";
-    userSecretsCache[uid] = {
+    const userCredentials = {
       userId: snapTradeUserId,
       userSecret,
     };
+    userSecretsCache[uid] = userCredentials;
     saveUsersCache(userSecretsCache);
-    return userSecretsCache[uid];
+    await saveUserToFirestore(uid, userCredentials);
+    return userCredentials;
   } catch (error: any) {
-    console.warn(`[SnapTrade] Registration returned error/already exists:`, error.response?.data || error.message);
-    if (userSecretsCache[uid]) {
-      return userSecretsCache[uid];
-    }
+    console.warn(`[SnapTrade] User already exists or registration issue:`, error.response?.data || error.message);
+    
+    // If the user already exists in SnapTrade but credentials were lost from legacy storage, 
+    // cleanly delete the orphaned SnapTrade user registration and re-register
     try {
-      console.log(`[SnapTrade] Attempting to reset user secret for: ${snapTradeUserId}`);
-      const resetRes = await snaptrade.authentication.resetSnapTradeUserSecret({
+      console.log(`[SnapTrade] Recreating user registration for: ${snapTradeUserId}`);
+      await snaptrade.authentication.deleteSnapTradeUser({
         userId: snapTradeUserId,
-        userSecret: "",
       });
-      const userSecret = resetRes.data.userSecret || "";
-      userSecretsCache[uid] = {
+      const reRegRes = await snaptrade.authentication.registerSnapTradeUser({
+        userId: snapTradeUserId,
+      });
+      const userSecret = reRegRes.data.userSecret || "";
+      const userCredentials = {
         userId: snapTradeUserId,
         userSecret,
       };
+      userSecretsCache[uid] = userCredentials;
       saveUsersCache(userSecretsCache);
-      return userSecretsCache[uid];
+      await saveUserToFirestore(uid, userCredentials);
+      return userCredentials;
     } catch (resetErr: any) {
-      console.error("[SnapTrade] Failed to reset user secret:", resetErr.response?.data || resetErr.message);
+      console.error("[SnapTrade] Failed to recreate SnapTrade user:", resetErr.response?.data || resetErr.message);
       throw error;
     }
   }
@@ -349,9 +431,9 @@ async function startServer() {
     res.json({ success: true, isConfigured: true });
   });
 
-  // 4. Generate Connection Portal Login Link
+  // 4. Generate Connection Portal Login Link (supports Reconnect mode)
   app.post("/api/snaptrade/portal-url", async (req, res) => {
-    const { uid, broker, immediateRedirect, customRedirect, connectionType } = req.body;
+    const { uid, broker, immediateRedirect, customRedirect, connectionType, reconnect } = req.body;
     if (!uid) {
       return res.status(400).json({ error: "Missing user UID" });
     }
@@ -367,7 +449,7 @@ async function startServer() {
 
     try {
       const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
-      console.log(`[SnapTrade] Generating portal login URL for user: ${userId}`);
+      console.log(`[SnapTrade] Generating portal login URL for user: ${userId}${reconnect ? ` (reconnect: ${reconnect})` : ''}`);
 
       const loginRes = await snaptrade.authentication.loginSnapTradeUser({
         userId,
@@ -375,8 +457,10 @@ async function startServer() {
         broker: broker || undefined,
         immediateRedirect: immediateRedirect || false,
         customRedirect: customRedirect || undefined,
-        connectionType: (connectionType as any) || "read",
+        reconnect: reconnect || undefined,
+        connectionType: (connectionType as any) || "trade-if-available",
         showCloseButton: true,
+        darkMode: true,
       });
 
       const responseData: any = loginRes.data;

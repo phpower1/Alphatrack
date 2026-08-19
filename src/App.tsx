@@ -318,8 +318,8 @@ export default function App() {
     setRefreshing(false);
   };
 
-  // Launch SnapTrade Connection Portal
-  const handleOpenConnectionPortal = async () => {
+  // Launch SnapTrade Connection Portal (supports reconnect mode for expired/disabled sessions)
+  const handleOpenConnectionPortal = async (reconnectId?: string) => {
     if (!user) return;
     setPortalLoading(true);
     setPortalError('');
@@ -331,6 +331,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           uid: user.uid,
+          reconnect: reconnectId || undefined,
           connectionType: 'trade-if-available'
         })
       });
@@ -541,6 +542,16 @@ export default function App() {
             <span>SnapTrade Connected</span>
           </div>
 
+          {connections.some(c => c.disabled) && (
+            <button
+              onClick={() => setConnectionsDialogOpen(true)}
+              className="flex items-center gap-1.5 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs px-3 py-1 rounded-full border border-amber-500/30 cursor-pointer transition-all animate-pulse"
+            >
+              <AlertCircle className="w-3.5 h-3.5" />
+              <span>Broker Re-auth Needed</span>
+            </button>
+          )}
+
           {dbError && (
             <div className="bg-amber-500/10 text-amber-300 text-xs px-3 py-1 rounded-full border border-amber-500/20">
               {dbError}
@@ -570,7 +581,7 @@ export default function App() {
 
           {/* Connect Brokerage Button */}
           <Button
-            onClick={handleOpenConnectionPortal}
+            onClick={() => handleOpenConnectionPortal()}
             className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-1.5 h-8 rounded-lg flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
           >
             <PlusCircle className="w-3.5 h-3.5" />
@@ -592,11 +603,18 @@ export default function App() {
           <Button
             onClick={() => setConnectionsDialogOpen(true)}
             variant="outline"
-            className="bg-[#181a22] border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-2.5 h-8 rounded-lg flex items-center gap-1 cursor-pointer transition-all"
+            className={`border-slate-700/80 hover:bg-slate-800 text-xs font-medium px-2.5 h-8 rounded-lg flex items-center gap-1 cursor-pointer transition-all ${
+              connections.some(c => c.disabled) 
+                ? 'bg-amber-500/10 text-amber-300 border-amber-500/40' 
+                : 'bg-[#181a22] text-slate-300'
+            }`}
             title="Manage Connected Brokerages"
           >
             <Building2 className="w-3.5 h-3.5" />
             <span className="hidden lg:inline">Brokers ({connections.length || accounts.length})</span>
+            {connections.some(c => c.disabled) && (
+              <span className="w-2 h-2 rounded-full bg-amber-400 ml-0.5" />
+            )}
           </Button>
 
           {/* Sign Out */}
@@ -614,32 +632,92 @@ export default function App() {
       {/* Main Content Area */}
       {accounts.length === 0 && !loading ? (
         <main className="flex-1 flex items-center justify-center p-6">
-          <Card className="w-full max-w-lg bg-[#13141a] border-slate-800/80 shadow-2xl p-6 text-center">
-            <div className="mx-auto w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-indigo-500/20">
-              <Building2 className="w-8 h-8 text-indigo-400" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white mb-2">Connect Your Brokerage</CardTitle>
-            <CardDescription className="text-slate-400 text-sm leading-relaxed mb-6">
-              Connect your Tastytrade, Robinhood, Charles Schwab, Fidelity, Webull, or Interactive Brokers account via SnapTrade to automatically sync your positions, transactions, and ROI analytics.
-            </CardDescription>
+          {connections.length > 0 ? (
+            <Card className="w-full max-w-lg bg-[#13141a] border-slate-800/80 shadow-2xl p-6 text-center">
+              <div className="mx-auto w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-indigo-500/20">
+                <Building2 className="w-8 h-8 text-indigo-400" />
+              </div>
+              <CardTitle className="text-2xl font-bold text-white mb-2">Brokerage Linked</CardTitle>
+              <CardDescription className="text-slate-400 text-sm leading-relaxed mb-6">
+                You have {connections.length} linked brokerage connection(s). If your accounts are still syncing or require periodic authentication refresh, you can reconnect or trigger an immediate sync below.
+              </CardDescription>
 
-            <div className="grid grid-cols-3 gap-2 mb-6">
-              {['Tastytrade', 'Robinhood', 'Charles Schwab', 'Fidelity', 'Webull', 'Interactive Brokers'].map((broker) => (
-                <div key={broker} className="bg-[#181a22] border border-slate-800 rounded-lg p-2 text-xs font-medium text-slate-300">
-                  {broker}
-                </div>
-              ))}
-            </div>
+              <div className="flex flex-col gap-3 mb-6">
+                {connections.map((c) => (
+                  <div key={c.id} className="bg-[#181a22] border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+                    <div className="text-left">
+                      <div className="text-xs font-bold text-white">{c.brokerage?.name || 'Brokerage Connection'}</div>
+                      <div className="text-[11px] text-slate-400">
+                        Status: {c.disabled ? (
+                          <span className="text-amber-400 font-medium">Re-authentication Required</span>
+                        ) : (
+                          <span className="text-emerald-400 font-medium">Active & Connected</span>
+                        )}
+                      </div>
+                    </div>
+                    {c.disabled && (
+                      <Button
+                        onClick={() => handleOpenConnectionPortal(c.id)}
+                        size="sm"
+                        className="bg-amber-600 hover:bg-amber-500 text-white text-xs h-7 px-3 rounded-lg"
+                      >
+                        <RefreshCw className="w-3 h-3 mr-1" />
+                        Reconnect
+                      </Button>
+                    )}
+                  </div>
+                ))}
+              </div>
 
-            <Button
-              onClick={handleOpenConnectionPortal}
-              size="lg"
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
-            >
-              <PlusCircle className="w-5 h-5" />
-              Link Brokerage Account
-            </Button>
-          </Card>
+              <div className="flex gap-3">
+                <Button
+                  onClick={handleRefresh}
+                  disabled={refreshing}
+                  size="lg"
+                  variant="outline"
+                  className="flex-1 border-slate-700 bg-[#181a22] hover:bg-slate-800 text-slate-200 text-xs py-5 rounded-xl cursor-pointer"
+                >
+                  <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
+                  Sync Portfolio
+                </Button>
+                <Button
+                  onClick={() => handleOpenConnectionPortal()}
+                  size="lg"
+                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-5 rounded-xl shadow-lg shadow-indigo-600/20 cursor-pointer"
+                >
+                  <PlusCircle className="w-4 h-4 mr-2" />
+                  Link Another Broker
+                </Button>
+              </div>
+            </Card>
+          ) : (
+            <Card className="w-full max-w-lg bg-[#13141a] border-slate-800/80 shadow-2xl p-6 text-center">
+              <div className="mx-auto w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-indigo-500/20">
+                <Building2 className="w-8 h-8 text-indigo-400" />
+              </div>
+              <CardTitle className="text-2xl font-bold text-white mb-2">Connect Your Brokerage</CardTitle>
+              <CardDescription className="text-slate-400 text-sm leading-relaxed mb-6">
+                Connect your Tastytrade, Robinhood, Charles Schwab, Fidelity, Webull, or Interactive Brokers account via SnapTrade to automatically sync your positions, transactions, and ROI analytics.
+              </CardDescription>
+
+              <div className="grid grid-cols-3 gap-2 mb-6">
+                {['Tastytrade', 'Robinhood', 'Charles Schwab', 'Fidelity', 'Webull', 'Interactive Brokers'].map((broker) => (
+                  <div key={broker} className="bg-[#181a22] border border-slate-800 rounded-lg p-2 text-xs font-medium text-slate-300">
+                    {broker}
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                onClick={() => handleOpenConnectionPortal()}
+                size="lg"
+                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
+              >
+                <PlusCircle className="w-5 h-5" />
+                Link Brokerage Account
+              </Button>
+            </Card>
+          )}
         </main>
       ) : (
         <main className="flex-1 flex flex-col p-6 max-w-[1600px] w-full mx-auto gap-6 min-h-0">
@@ -1019,6 +1097,7 @@ export default function App() {
               (connections.length > 0 ? connections : accounts).map((item: any) => {
                 const title = item.brokerage?.name || item.institution_name || 'Brokerage Connection';
                 const id = item.id;
+                const isDisabled = item.disabled === true;
                 return (
                   <div key={id} className="bg-[#181a22] border border-slate-800/80 p-3.5 rounded-xl flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -1026,21 +1105,47 @@ export default function App() {
                         {title.slice(0, 2).toUpperCase()}
                       </div>
                       <div>
-                        <div className="text-xs font-semibold text-white">{title}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-semibold text-white">{title}</span>
+                          {isDisabled ? (
+                            <span className="bg-amber-500/10 text-amber-300 text-[10px] px-2 py-0.5 rounded-full border border-amber-500/30">
+                              Re-auth Needed
+                            </span>
+                          ) : (
+                            <span className="bg-emerald-500/10 text-emerald-300 text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/20">
+                              Active
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[10px] text-slate-400 font-mono">ID: {id.slice(0, 16)}...</div>
                       </div>
                     </div>
 
-                    <Button
-                      onClick={() => handleDisconnectBroker(id)}
-                      variant="ghost"
-                      size="sm"
-                      className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 h-8 px-2.5 text-xs cursor-pointer"
-                      title="Disconnect Brokerage"
-                    >
-                      <Trash2 className="w-3.5 h-3.5 mr-1" />
-                      Unlink
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      {isDisabled && (
+                        <Button
+                          onClick={() => {
+                            setConnectionsDialogOpen(false);
+                            handleOpenConnectionPortal(id);
+                          }}
+                          size="sm"
+                          className="bg-amber-600 hover:bg-amber-500 text-white h-7 px-2.5 text-xs cursor-pointer shadow-sm"
+                        >
+                          <RefreshCw className="w-3 h-3 mr-1" />
+                          Reconnect
+                        </Button>
+                      )}
+                      <Button
+                        onClick={() => handleDisconnectBroker(id)}
+                        variant="ghost"
+                        size="sm"
+                        className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 h-7 px-2.5 text-xs cursor-pointer"
+                        title="Disconnect Brokerage"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 mr-1" />
+                        Unlink
+                      </Button>
+                    </div>
                   </div>
                 );
               })
