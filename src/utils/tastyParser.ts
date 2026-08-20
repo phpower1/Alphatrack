@@ -5,39 +5,43 @@
  */
 
 export interface ParsedOptionDetails {
-  rootSymbol: string;          // e.g. "/MNQ", "SNAP", "NVDA"
+  rootSymbol: string;          // e.g. "/MNQ", "/MES", "SNAP", "NVDA"
   futureCycle?: string;        // e.g. "U6", "Z6", "M6"
   fullSymbol: string;          // e.g. "/MNQU6", "SNAP"
   isOption: boolean;
   isFuture: boolean;
   expirationDate?: string;     // "2026-09-18"
   expirationFormatted?: string;// "Sep 18" or "Sep 18, 2026"
-  dte?: number;                // Days to expiration from trade date
+  dte?: number;                // Days to expiration from trade execution date (e.g. 38)
+  daysLeft?: number;           // Days to expiration from TODAY (e.g. 29)
+  daysLeftFormatted?: string;  // "29d left", "1d left", "Today", "Expired"
+  isExpired?: boolean;         // Expired relative to today
   isAmSettled?: boolean;       // Morning expiration indicator (AM)
   strike?: number;             // e.g. 26100, 25800, 5.50
-  strikeFormatted?: string;    // "26100", "5.50"
+  strikeFormatted?: string;    // "26100", "$5.50"
   optionType?: 'CALL' | 'PUT'; // "CALL" | "PUT"
   optionTypeShort?: 'C' | 'P'; // "C" | "P"
   action: 'BTO' | 'STO' | 'BTC' | 'STC' | 'Buy' | 'Sell' | 'EXPIRED' | 'ASSIGNED';
   actionType: 'Buy' | 'Sell';
-  quantity: number;            // Signed or absolute quantity
+  quantity: number;            // Absolute quantity (e.g. 1, 2)
+  signedQuantity: number;      // Signed quantity (e.g. +1, -2)
   price: number;               // Execution or trade price
-  formattedTradeDate: string;  // "8/10 8:50a" or "Aug 10, 2026 8:50 AM"
+  formattedTradeDate: string;  // "Aug 10, 2026 12:50 PM"
   rawDescription: string;
 }
-
-const MONTH_CODES: Record<string, string> = {
-  F: 'Jan', G: 'Feb', H: 'Mar', J: 'Apr', K: 'May', M: 'Jun',
-  N: 'Jul', Q: 'Aug', U: 'Sep', V: 'Oct', X: 'Nov', Z: 'Dec'
-};
 
 const MONTH_NAMES = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
 ];
 
+const MONTH_INDEX_MAP: Record<string, number> = {
+  JAN: 0, FEB: 1, MAR: 2, APR: 3, MAY: 4, JUN: 5,
+  JUL: 6, AUG: 7, SEP: 8, OCT: 9, NOV: 10, DEC: 11
+};
+
 /**
- * Format ISO or date string to Tasty-style readable format: "8/10 8:50a" or "Aug 10, 2026 12:50 PM"
+ * Format ISO or date string to Tasty-style readable format: "Aug 10, 2026 12:50 PM"
  */
 export function formatTradeDateTime(dateStr?: string | null): string {
   if (!dateStr) return '-';
@@ -45,7 +49,6 @@ export function formatTradeDateTime(dateStr?: string | null): string {
     const d = new Date(dateStr);
     if (isNaN(d.getTime())) return dateStr;
 
-    // Check if time component is present
     const hasTime = dateStr.includes('T') || dateStr.includes(':');
     const month = MONTH_NAMES[d.getUTCMonth()] || `${d.getUTCMonth() + 1}`;
     const day = d.getUTCDate();
@@ -67,138 +70,75 @@ export function formatTradeDateTime(dateStr?: string | null): string {
 }
 
 /**
- * Calculate DTE (Days to Expiration)
+ * Calculate DTE and Days Left from today
  */
-export function calculateDTE(tradeDateStr?: string, expiryDateStr?: string): number | undefined {
-  if (!tradeDateStr || !expiryDateStr) return undefined;
+export function calculateDTEAndDaysLeft(tradeDateStr?: string, expiryDateStr?: string): {
+  dte?: number;
+  daysLeft?: number;
+  daysLeftFormatted?: string;
+  isExpired?: boolean;
+} {
+  if (!expiryDateStr) return {};
   try {
-    const tDate = new Date(tradeDateStr);
     const eDate = new Date(expiryDateStr);
-    if (isNaN(tDate.getTime()) || isNaN(eDate.getTime())) return undefined;
-    const diffTime = eDate.getTime() - tDate.getTime();
-    const diffDays = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
-    return diffDays;
-  } catch {
-    return undefined;
-  }
-}
+    if (isNaN(eDate.getTime())) return {};
 
-/**
- * Parse an OCC Option Symbol (e.g. "SNAP  260911C00005500")
- */
-function parseOCCOption(ticker: string): Partial<ParsedOptionDetails> | null {
-  // Format: 1-6 chars ticker + 6 digits date (YYMMDD) + C/P + 8 digits strike (divide by 1000)
-  const match = ticker.trim().match(/^([A-Z]{1,6})\s*(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/i);
-  if (!match) return null;
+    // 1. DTE at trade date
+    let dte: number | undefined = undefined;
+    if (tradeDateStr) {
+      const tDate = new Date(tradeDateStr);
+      if (!isNaN(tDate.getTime())) {
+        const diffTime = eDate.getTime() - tDate.getTime();
+        dte = Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
+      }
+    }
 
-  const [, root, yy, mm, dd, typeChar, strikeRaw] = match;
-  const year = 2000 + parseInt(yy, 10);
-  const monthNum = parseInt(mm, 10);
-  const day = parseInt(dd, 10);
-  const strike = parseInt(strikeRaw, 10) / 1000;
-  const optionTypeShort = typeChar.toUpperCase() as 'C' | 'P';
-  const optionType = optionTypeShort === 'C' ? 'CALL' : 'PUT';
-  const monthName = MONTH_NAMES[monthNum - 1] || mm;
-  const expirationDate = `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
-  const expirationFormatted = `${monthName} ${day}`;
+    // 2. Days left from today
+    const now = new Date();
+    // Normalize to midnight UTC for clean calendar day count
+    const eMidnight = Date.UTC(eDate.getUTCFullYear(), eDate.getUTCMonth(), eDate.getUTCDate());
+    const nMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const diffFromToday = Math.round((eMidnight - nMidnight) / (1000 * 60 * 60 * 24));
 
-  return {
-    rootSymbol: root.toUpperCase(),
-    fullSymbol: root.toUpperCase(),
-    isOption: true,
-    isFuture: false,
-    expirationDate,
-    expirationFormatted,
-    strike,
-    strikeFormatted: strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(2),
-    optionType,
-    optionTypeShort
-  };
-}
-
-/**
- * Parse Futures / Futures Option Strings from Tastytrade
- * Examples:
- *   - "./MNQU6 260918P26100"
- *   - "./MNQU6 EW3U6 260810C19000"
- *   - "/MNQU6 260810C19000"
- *   - "/MNQU6"
- *   - "BOT +1 /MNQU6 19500 CALL"
- *   - "SLD 2 /MNQU6 260918P25800"
- */
-function parseTastyFuturesOrOption(str: string): Partial<ParsedOptionDetails> | null {
-  if (!str) return null;
-
-  // 1. Check for Tasty Futures Option: e.g. "./MNQU6 260918P26100" or "./MNQU6 EW3U6 240823C5750" or "/MNQU6 260918P26100"
-  const futOptMatch = str.match(/\.?\/([A-Z0-9]+)(?:\s+[A-Z0-9]+)?\s+(\d{2})(\d{2})(\d{2})([CP])(\d+)/i)
-    || str.match(/\/([A-Z0-9]+)\s+(\d{2})(\d{2})(\d{2})([CP])(\d+)/i)
-    || str.match(/\b([A-Z0-9]+)\s+(\d{2})(\d{2})(\d{2})([CP])(\d+)\b/i);
-
-  if (futOptMatch) {
-    const [, futureCode, yy, mm, dd, typeChar, strikeRaw] = futOptMatch;
-    const year = 2000 + parseInt(yy, 10);
-    const monthNum = parseInt(mm, 10);
-    const day = parseInt(dd, 10);
-    const strike = parseFloat(strikeRaw);
-    const optionTypeShort = typeChar.toUpperCase() as 'C' | 'P';
-    const optionType = optionTypeShort === 'C' ? 'CALL' : 'PUT';
-    const monthName = MONTH_NAMES[monthNum - 1] || mm;
-    const expirationDate = `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
-    const expirationFormatted = `${monthName} ${day}`;
-
-    // Extract root and cycle from futureCode (e.g. "MNQU6" -> root "/MNQ", cycle "U6")
-    let root = futureCode.startsWith('/') ? futureCode : `/${futureCode}`;
-    let cycle = '';
-    const cycleMatch = root.match(/^(\/[A-Z0-9]+?)([FGHJKMNQUVXZ]\d{1,2})$/i);
-    if (cycleMatch) {
-      root = cycleMatch[1];
-      cycle = cycleMatch[2].toUpperCase();
+    const daysLeft = diffFromToday;
+    const isExpired = diffFromToday < 0;
+    let daysLeftFormatted = `${daysLeft}d left`;
+    if (isExpired) {
+      daysLeftFormatted = 'Expired';
+    } else if (daysLeft === 0) {
+      daysLeftFormatted = 'Today (0d)';
+    } else if (daysLeft === 1) {
+      daysLeftFormatted = '1d left';
     }
 
     return {
-      rootSymbol: root.toUpperCase(),
-      futureCycle: cycle,
-      fullSymbol: `${root}${cycle}`.toUpperCase(),
-      isOption: true,
-      isFuture: true,
-      expirationDate,
-      expirationFormatted,
-      strike,
-      strikeFormatted: strike.toString(),
-      optionType,
-      optionTypeShort
+      dte,
+      daysLeft,
+      daysLeftFormatted,
+      isExpired
     };
+  } catch {
+    return {};
   }
-
-  // 2. Check for Future without option (e.g. "/MNQU6", "/ESU6", "/MESZ6", "/NQZ26")
-  const futMatch = str.match(/\/?([A-Z]{2,5})([FGHJKMNQUVXZ]\d{1,2})/i);
-  if (futMatch) {
-    const [, base, cycle] = futMatch;
-    const root = `/${base.toUpperCase()}`;
-    const cycleCode = cycle.toUpperCase();
-    return {
-      rootSymbol: root,
-      futureCycle: cycleCode,
-      fullSymbol: `${root}${cycleCode}`,
-      isOption: false,
-      isFuture: true
-    };
-  }
-
-  return null;
 }
 
 /**
- * Main parser: takes a SnapTrade activity or position item and returns parsed Tasty details.
+ * Main parser: takes an activity or position object and decomposes it into rich Tasty details.
  */
 export function parseTastyTradeItem(act: any): ParsedOptionDetails {
-  const description = act.description || '';
-  const rawSymbol = act.symbol?.raw_symbol || act.raw_symbol || act.symbol?.symbol || '';
-  const optionTicker = act.option_symbol?.ticker || '';
+  const description = (act.description || '').trim();
+  const rawSymbol = (
+    act.instrument?.symbol ||
+    act.symbol?.raw_symbol ||
+    act.raw_symbol ||
+    act.symbol?.symbol ||
+    ''
+  ).trim();
+  const optionTicker = (act.option_symbol?.ticker || '').trim();
   const rawType = (act.option_type || act.type || 'BUY').toUpperCase();
   const tradeDate = act.trade_date || act.settlement_date || act.date || new Date().toISOString();
 
-  // Determine Action: BTO, STO, BTC, STC, Buy, Sell, Expired
+  // 1. Determine Action & Sign
   let action: ParsedOptionDetails['action'] = 'Buy';
   let actionType: 'Buy' | 'Sell' = 'Buy';
 
@@ -230,103 +170,174 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
 
   const rawUnits = parseFloat(act.units || act.quantity || '1');
   const quantity = isNaN(rawUnits) || rawUnits === 0 ? 1 : Math.abs(rawUnits);
+  const signedQuantity = action === 'STO' || action === 'STC' || rawUnits < 0 ? -quantity : quantity;
   const rawPrice = parseFloat(act.price || (act.amount ? Math.abs(act.amount / quantity) : 0));
   const price = isNaN(rawPrice) ? 0 : Math.abs(rawPrice);
 
-  // Try 1: Parse from OCC Option Ticker
-  if (optionTicker) {
-    const parsedOcc = parseOCCOption(optionTicker);
-    if (parsedOcc) {
-      const dte = calculateDTE(tradeDate, parsedOcc.expirationDate);
-      return {
-        rootSymbol: parsedOcc.rootSymbol || 'UNKNOWN',
-        futureCycle: parsedOcc.futureCycle,
-        fullSymbol: parsedOcc.fullSymbol || parsedOcc.rootSymbol || 'UNKNOWN',
-        isOption: true,
-        isFuture: false,
-        expirationDate: parsedOcc.expirationDate,
-        expirationFormatted: parsedOcc.expirationFormatted,
-        dte,
-        strike: parsedOcc.strike,
-        strikeFormatted: parsedOcc.strikeFormatted,
-        optionType: parsedOcc.optionType,
-        optionTypeShort: parsedOcc.optionTypeShort,
-        action,
-        actionType,
-        quantity,
-        price,
-        formattedTradeDate: formatTradeDateTime(tradeDate),
-        rawDescription: description || optionTicker
-      };
+  // Combine all available text sources for comprehensive extraction
+  const allText = `${rawSymbol} ${optionTicker} ${description} ${act.instrument?.description || ''}`.trim();
+
+  // 2. Extract Root Symbol & Future Cycle
+  let rootSymbol = '';
+  let futureCycle = '';
+  let isFuture = false;
+
+  // Check for Futures: /MNQU6, /MESU6, /ESU6, ./MNQU6, etc.
+  const futCycleMatch = allText.match(/(?:\.\/|\/|\b)([A-Z]{2,5})([FGHJKMNQUVXZ]\d{1,2})\b/i);
+  if (futCycleMatch) {
+    rootSymbol = `/${futCycleMatch[1].toUpperCase()}`;
+    futureCycle = futCycleMatch[2].toUpperCase();
+    isFuture = true;
+  } else {
+    // Standalone Future root: /MNQ, /ES, /MES
+    const futRootMatch = allText.match(/(?:\.\/|\/)([A-Z]{2,5})\b/i);
+    if (futRootMatch) {
+      rootSymbol = `/${futRootMatch[1].toUpperCase()}`;
+      isFuture = true;
+    } else {
+      // OCC or Stock root: e.g. "SNAP", "NVDA", "AAPL"
+      const occRootMatch = allText.match(/^([A-Z]{1,6})\s*\d{6}[CP]/i);
+      if (occRootMatch) {
+        rootSymbol = occRootMatch[1].toUpperCase();
+      } else if (act.symbol?.symbol) {
+        rootSymbol = act.symbol.symbol.toUpperCase();
+      } else if (act.option_symbol?.underlying_symbol?.symbol) {
+        rootSymbol = act.option_symbol.underlying_symbol.symbol.toUpperCase();
+      } else if (act.instrument?.underlying?.symbol) {
+        rootSymbol = act.instrument.underlying.symbol.toUpperCase();
+      } else {
+        // Fallback root from first ticker-like token
+        const wordMatch = allText.match(/\b([A-Z]{2,6})\b/);
+        rootSymbol = wordMatch ? wordMatch[1].toUpperCase() : 'UNKNOWN';
+      }
     }
   }
 
-  // Try 2: Parse from Futures/Option strings in rawSymbol or description
-  const combinedText = `${rawSymbol} ${description}`;
-  const parsedFutures = parseTastyFuturesOrOption(combinedText);
-  if (parsedFutures) {
-    const dte = calculateDTE(tradeDate, parsedFutures.expirationDate);
-    return {
-      rootSymbol: parsedFutures.rootSymbol || '/MNQ',
-      futureCycle: parsedFutures.futureCycle,
-      fullSymbol: parsedFutures.fullSymbol || `${parsedFutures.rootSymbol || '/MNQ'}${parsedFutures.futureCycle || ''}`,
-      isOption: Boolean(parsedFutures.isOption),
-      isFuture: true,
-      expirationDate: parsedFutures.expirationDate,
-      expirationFormatted: parsedFutures.expirationFormatted,
-      dte,
-      strike: parsedFutures.strike,
-      strikeFormatted: parsedFutures.strikeFormatted,
-      optionType: parsedFutures.optionType,
-      optionTypeShort: parsedFutures.optionTypeShort,
-      action,
-      actionType,
-      quantity,
-      price,
-      formattedTradeDate: formatTradeDateTime(tradeDate),
-      rawDescription: description || rawSymbol
-    };
+  // 3. Extract Option Expiration Date, Strike Price, and Call/Put Type
+  let isOption = Boolean(act.instrument?.kind === 'option' || act.option_symbol || act.option_type);
+  let expirationDate: string | undefined = act.option_symbol?.expiration_date || act.instrument?.expiration_date;
+  let strike: number | undefined = act.option_symbol?.strike_price ? parseFloat(act.option_symbol.strike_price) : (act.instrument?.strike_price ? parseFloat(act.instrument.strike_price) : undefined);
+  let optionType: 'CALL' | 'PUT' | undefined = act.option_symbol?.option_type ? (act.option_symbol.option_type.toUpperCase().includes('C') ? 'CALL' : 'PUT') : (act.instrument?.option_type ? (act.instrument.option_type.toUpperCase().includes('C') ? 'CALL' : 'PUT') : undefined);
+
+  // Pattern A: OCC or Tasty compact option code: e.g. "260918P26100", "260810C19000", "240823C5750", "260911C00005500"
+  const compactOptMatch = allText.match(/(?:\b|[A-Z])(\d{2})(\d{2})(\d{2})([CP])(\d+)\b/i);
+  if (compactOptMatch) {
+    isOption = true;
+    const [, yy, mm, dd, typeChar, strikeRaw] = compactOptMatch;
+    const year = 2000 + parseInt(yy, 10);
+    const monthNum = parseInt(mm, 10);
+    const day = parseInt(dd, 10);
+    if (!expirationDate) {
+      expirationDate = `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+    }
+    if (!optionType) {
+      optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
+    }
+    if (strike === undefined || isNaN(strike)) {
+      // If 8-digit OCC equity strike (e.g. 00005500 -> 5.50)
+      if (strikeRaw.length === 8 && strikeRaw.startsWith('000')) {
+        strike = parseInt(strikeRaw, 10) / 1000;
+      } else {
+        strike = parseFloat(strikeRaw);
+      }
+    }
   }
 
-  // Try 3: OCC in description
-  const occInDesc = parseOCCOption(description);
-  if (occInDesc) {
-    const dte = calculateDTE(tradeDate, occInDesc.expirationDate);
-    return {
-      rootSymbol: occInDesc.rootSymbol || 'UNKNOWN',
-      futureCycle: occInDesc.futureCycle,
-      fullSymbol: occInDesc.fullSymbol || occInDesc.rootSymbol || 'UNKNOWN',
-      isOption: true,
-      isFuture: false,
-      expirationDate: occInDesc.expirationDate,
-      expirationFormatted: occInDesc.expirationFormatted,
-      dte,
-      strike: occInDesc.strike,
-      strikeFormatted: occInDesc.strikeFormatted,
-      optionType: occInDesc.optionType,
-      optionTypeShort: occInDesc.optionTypeShort,
-      action,
-      actionType,
-      quantity,
-      price,
-      formattedTradeDate: formatTradeDateTime(tradeDate),
-      rawDescription: description
-    };
+  // Pattern B: Month Name + Day + Strike + C/P: e.g. "Sep 18 26100 P", "Aug 21 24500 P", "Jul 31 26300 PUT"
+  if (!expirationDate || strike === undefined || !optionType) {
+    const monthDayMatch = allText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+(\d+(?:\.\d+)?)\s*([CP]|CALL|PUT)/i);
+    if (monthDayMatch) {
+      isOption = true;
+      const [, mStr, dStr, yStr, sStr, tStr] = monthDayMatch;
+      const mIdx = MONTH_INDEX_MAP[mStr.toUpperCase()] ?? 0;
+      const day = parseInt(dStr, 10);
+      const year = yStr ? parseInt(yStr, 10) : new Date(tradeDate).getUTCFullYear();
+      if (!expirationDate) {
+        expirationDate = `${year}-${(mIdx + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+      }
+      if (strike === undefined || isNaN(strike)) {
+        strike = parseFloat(sStr);
+      }
+      if (!optionType) {
+        optionType = tStr.toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
+      }
+    }
   }
 
-  // Fallback: Standard Equity ticker (e.g. NVDA, AAPL)
-  const sym = act.symbol?.symbol || rawSymbol || 'UNKNOWN';
+  // Pattern C: Standalone Month + Day with Strike nearby: e.g. "Jul 31 ... 26300"
+  if (!expirationDate) {
+    const monthOnlyMatch = allText.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\b/i);
+    if (monthOnlyMatch) {
+      const [, mStr, dStr, yStr] = monthOnlyMatch;
+      const mIdx = MONTH_INDEX_MAP[mStr.toUpperCase()] ?? 0;
+      const day = parseInt(dStr, 10);
+      const year = yStr ? parseInt(yStr, 10) : new Date(tradeDate).getUTCFullYear();
+      expirationDate = `${year}-${(mIdx + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+      isOption = true;
+    }
+  }
+
+  // Pattern D: Standalone Strike + Call/Put
+  if (strike === undefined || isNaN(strike)) {
+    const strikeMatch = allText.match(/\b(\d{3,6})\s*(CALL|PUT|[CP])\b/i);
+    if (strikeMatch) {
+      strike = parseFloat(strikeMatch[1]);
+      if (!optionType) {
+        optionType = strikeMatch[2].toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
+      }
+      isOption = true;
+    }
+  }
+
+  // Format Expiration String: "Sep 18"
+  let expirationFormatted: string | undefined = undefined;
+  if (expirationDate) {
+    const expDateObj = new Date(expirationDate);
+    if (!isNaN(expDateObj.getTime())) {
+      const mName = MONTH_NAMES[expDateObj.getUTCMonth()] || '';
+      const dNum = expDateObj.getUTCDate();
+      expirationFormatted = `${mName} ${dNum}`;
+    }
+  }
+
+  // Format Strike: "26100" or "$5.50"
+  let strikeFormatted: string | undefined = undefined;
+  if (strike !== undefined && !isNaN(strike)) {
+    strikeFormatted = strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(2);
+  }
+
+  const optionTypeShort: 'C' | 'P' | undefined = optionType ? (optionType === 'CALL' ? 'C' : 'P') : undefined;
+
+  // Calculate DTE and Days Left from Today
+  const dteInfo = calculateDTEAndDaysLeft(tradeDate, expirationDate);
+
+  const fullSymbol = isFuture 
+    ? `${rootSymbol}${futureCycle}`.toUpperCase()
+    : rootSymbol.toUpperCase();
+
   return {
-    rootSymbol: sym,
-    fullSymbol: sym,
-    isOption: false,
-    isFuture: sym.startsWith('/'),
-    action: actionType === 'Buy' ? 'Buy' : 'Sell',
+    rootSymbol: rootSymbol || 'UNKNOWN',
+    futureCycle: futureCycle || undefined,
+    fullSymbol: fullSymbol || 'UNKNOWN',
+    isOption,
+    isFuture,
+    expirationDate,
+    expirationFormatted,
+    dte: dteInfo.dte,
+    daysLeft: dteInfo.daysLeft,
+    daysLeftFormatted: dteInfo.daysLeftFormatted,
+    isExpired: dteInfo.isExpired,
+    strike,
+    strikeFormatted,
+    optionType,
+    optionTypeShort,
+    action,
     actionType,
     quantity,
+    signedQuantity,
     price,
     formattedTradeDate: formatTradeDateTime(tradeDate),
-    rawDescription: description || sym
+    rawDescription: description || rawSymbol
   };
 }
 

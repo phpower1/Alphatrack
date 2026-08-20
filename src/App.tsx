@@ -255,6 +255,11 @@ export default function App() {
               const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units;
               const reqCapital = isNaN(rawAmount) || rawAmount === 0 ? price * units : rawAmount;
 
+              // Check if trade is an active open position
+              const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
+              const isOpenTrade = isOpeningAction && !details.isExpired && (details.daysLeft === undefined || details.daysLeft >= 0);
+              const status: 'Open' | 'Closed' = isOpenTrade ? 'Open' : 'Closed';
+
               return {
                 id: act.id || `${acc.id}-${idx}`,
                 accountId: acc.id,
@@ -264,9 +269,9 @@ export default function App() {
                 quantity: units,
                 price: price,
                 date: tradeDate,
-                status: 'Closed',
-                closePrice: price * (isBuy ? 1.06 : 0.94),
-                closeDate: tradeDate,
+                status: status,
+                closePrice: status === 'Closed' ? price * (isBuy ? 1.06 : 0.94) : null,
+                closeDate: status === 'Closed' ? tradeDate : null,
                 requiredCapital: reqCapital,
                 peakCapital: reqCapital * 1.15,
                 description: act.description || `${details.action} ${units} ${sym}`,
@@ -305,11 +310,38 @@ export default function App() {
                 quantity: units,
                 averagePrice: avgPrice,
                 currentPrice: currentPrice,
-                totalValue: units * currentPrice,
+                totalValue: Math.abs(units * currentPrice),
                 openPnl: openPnl,
                 details: details
               };
             });
+
+            // If broker positions endpoint is empty for this account (e.g. Tasty options cache),
+            // derive open positions from the active unexpired open trades!
+            if (parsedPositions.length === 0) {
+              const openAccountTrades = allTrades.filter(t => t.accountId === acc.id && t.status === 'Open');
+              const derivedPositions: Position[] = openAccountTrades.map((t, idx) => {
+                const units = t.details?.signedQuantity ?? (t.type === 'Buy' ? t.quantity : -t.quantity);
+                const currentPrice = t.price;
+                const avgPrice = t.price;
+                const totalValue = Math.abs(units * currentPrice);
+                const openPnl = 0;
+
+                return {
+                  id: `${acc.id}-derived-pos-${idx}`,
+                  accountId: acc.id,
+                  brokerName: acc.institution_name || 'Brokerage',
+                  symbol: t.symbol,
+                  quantity: units,
+                  averagePrice: avgPrice,
+                  currentPrice: currentPrice,
+                  totalValue: totalValue,
+                  openPnl: openPnl,
+                  details: t.details
+                };
+              });
+              parsedPositions.push(...derivedPositions);
+            }
 
             allPositions.push(...parsedPositions);
           } catch (e) {
@@ -920,16 +952,26 @@ export default function App() {
                                   </div>
                                   {trade.details?.isOption && (
                                     <div className="flex items-center gap-1.5 text-[11px]">
-                                      <span className="bg-slate-800 text-slate-200 px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border border-slate-700">
+                                      <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
+                                        trade.details.action === 'STO' || trade.details.action === 'STC'
+                                          ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                          : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                      }`}>
                                         {trade.details.action === 'STO' || trade.details.action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
                                       </span>
                                       {trade.details.expirationFormatted && (
-                                        <span className="text-slate-300 font-medium">{trade.details.expirationFormatted}</span>
+                                        <span className="text-slate-200 font-medium">{trade.details.expirationFormatted}</span>
                                       )}
-                                      {trade.details.dte !== undefined && (
-                                        <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
-                                          {trade.details.dte}d
+                                      {trade.status === 'Open' ? (
+                                        <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.2 rounded font-mono font-semibold border border-emerald-500/30">
+                                          {trade.details.daysLeftFormatted || `${trade.details.dte}d`}
                                         </span>
+                                      ) : (
+                                        trade.details.dte !== undefined && (
+                                          <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
+                                            {trade.details.dte}d
+                                          </span>
+                                        )
                                       )}
                                       {trade.details.strikeFormatted && (
                                         <span className="font-mono font-bold text-slate-100">{trade.details.strikeFormatted}</span>
@@ -953,21 +995,28 @@ export default function App() {
                                 </span>
                               </td>
                               <td className="p-3.5">
-                                <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border ${
-                                  action === 'BTO' || action === 'Buy'
-                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                                    : action === 'STO' || action === 'Sell'
-                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                                    : action === 'BTC'
-                                    ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
-                                    : action === 'STC'
-                                    ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                                    : action === 'EXPIRED'
-                                    ? 'bg-slate-800 text-slate-400 border-slate-700'
-                                    : 'bg-slate-800 text-slate-300 border-slate-700'
-                                }`}>
-                                  {action} {trade.quantity}
-                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border ${
+                                    action === 'BTO' || action === 'Buy'
+                                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                      : action === 'STO' || action === 'Sell'
+                                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                      : action === 'BTC'
+                                      ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
+                                      : action === 'STC'
+                                      ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                      : action === 'EXPIRED'
+                                      ? 'bg-slate-800 text-slate-400 border-slate-700'
+                                      : 'bg-slate-800 text-slate-300 border-slate-700'
+                                  }`}>
+                                    {action} {trade.quantity}
+                                  </span>
+                                  {trade.status === 'Open' && (
+                                    <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
+                                      OPEN
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td className="p-3.5 text-slate-400 text-xs font-sans">
                                 {formatTradeDateTime(trade.date)}
@@ -994,9 +1043,10 @@ export default function App() {
                   <table className="w-full border-collapse text-left">
                     <thead className="sticky top-0 bg-[#161820] z-10">
                       <tr>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Contract</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Days Left / Expiry</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
@@ -1006,7 +1056,7 @@ export default function App() {
                     <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
                       {filteredPositions.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="text-center p-12 text-slate-500 font-sans">
+                          <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
                             No open positions found.
                           </td>
                         </tr>
@@ -1032,16 +1082,15 @@ export default function App() {
                                 </div>
                                 {pos.details?.isOption && (
                                   <div className="flex items-center gap-1.5 text-[11px]">
-                                    <span className="bg-slate-800 text-slate-200 px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border border-slate-700">
+                                    <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
+                                      pos.quantity < 0
+                                        ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                        : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                    }`}>
                                       {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
                                     </span>
                                     {pos.details.expirationFormatted && (
-                                      <span className="text-slate-300 font-medium">{pos.details.expirationFormatted}</span>
-                                    )}
-                                    {pos.details.dte !== undefined && (
-                                      <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
-                                        {pos.details.dte}d
-                                      </span>
+                                      <span className="text-slate-200 font-medium">{pos.details.expirationFormatted}</span>
                                     )}
                                     {pos.details.strikeFormatted && (
                                       <span className="font-mono font-bold text-slate-100">{pos.details.strikeFormatted}</span>
@@ -1064,7 +1113,15 @@ export default function App() {
                                 {pos.brokerName}
                               </span>
                             </td>
-                            <td className="p-3.5 text-slate-300">{pos.quantity}</td>
+                            <td className="p-3.5 text-slate-300 font-semibold">{pos.quantity > 0 ? `+${pos.quantity}` : pos.quantity}</td>
+                            <td className="p-3.5">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                {pos.details?.daysLeftFormatted || (pos.details?.dte !== undefined ? `${pos.details.dte}d left` : 'Active')}
+                                {pos.details?.expirationFormatted && (
+                                  <span className="text-emerald-300/80 font-normal">({pos.details.expirationFormatted})</span>
+                                )}
+                              </span>
+                            </td>
                             <td className="p-3.5 text-slate-400">${(pos.averagePrice || 0).toFixed(2)}</td>
                             <td className="p-3.5 text-slate-200 font-semibold">${(pos.currentPrice || 0).toFixed(2)}</td>
                             <td className="p-3.5 font-bold text-white">${(pos.totalValue || 0).toFixed(2)}</td>
@@ -1120,7 +1177,18 @@ export default function App() {
                       {activeTrade.details?.isOption && (
                         <div className="bg-[#181a22] border border-slate-800/90 rounded-xl p-3 mb-4 font-sans">
                           <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2.5 border-b border-slate-800 pb-2">
-                            <span className="font-semibold text-slate-300">Order Chain Leg</span>
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-slate-300">Order Chain Leg</span>
+                              {activeTrade.status === 'Open' ? (
+                                <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
+                                  OPEN
+                                </span>
+                              ) : (
+                                <span className="bg-slate-800 text-slate-400 text-[9px] px-1.5 py-0.5 rounded font-medium border border-slate-700">
+                                  CLOSED
+                                </span>
+                              )}
+                            </div>
                             <span className="font-mono text-emerald-400 font-bold">
                               ${(activeTrade.price || 0).toFixed(2)}
                             </span>
@@ -1132,16 +1200,26 @@ export default function App() {
                                   {activeTrade.details.futureCycle}
                                 </span>
                               )}
-                              <span className="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold border border-slate-700">
+                              <span className={`px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold border ${
+                                activeTrade.details.action === 'STO' || activeTrade.details.action === 'STC'
+                                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                  : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                              }`}>
                                 {activeTrade.details.action === 'STO' || activeTrade.details.action === 'STC' ? `-${activeTrade.quantity}` : `+${activeTrade.quantity}`}
                               </span>
                               <span className="text-slate-200 text-xs font-medium">
                                 {activeTrade.details.expirationFormatted}
                               </span>
-                              {activeTrade.details.dte !== undefined && (
-                                <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">
-                                  {activeTrade.details.dte}d
+                              {activeTrade.status === 'Open' ? (
+                                <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded font-mono font-semibold border border-emerald-500/30">
+                                  {activeTrade.details.daysLeftFormatted || `${activeTrade.details.dte}d left`}
                                 </span>
+                              ) : (
+                                activeTrade.details.dte !== undefined && (
+                                  <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">
+                                    {activeTrade.details.dte}d
+                                  </span>
+                                )
                               )}
                               <span className="font-mono text-xs font-bold text-white">
                                 {activeTrade.details.strikeFormatted}
@@ -1185,6 +1263,12 @@ export default function App() {
 
                       <div className="mt-6 space-y-3 font-mono text-xs border-t border-slate-800/80 pt-4">
                         <div className="flex justify-between">
+                          <span className="text-slate-400 font-sans">Status:</span>
+                          <span className={activeTrade.status === 'Open' ? 'text-emerald-400 font-bold' : 'text-slate-300 font-semibold'}>
+                            {activeTrade.status === 'Open' ? 'Open Active Position' : 'Closed Trade'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Execution Date:</span>
                           <span className="text-slate-200">{formatTradeDateTime(activeTrade.date)}</span>
                         </div>
@@ -1201,7 +1285,7 @@ export default function App() {
                           <span className="text-slate-200">${(activeTrade.peakCapital || 0).toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Realized Gain/Loss:</span>
+                          <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Realized Gain/Loss:'}</span>
                           <span className={(activeMetrics.profit || 0) >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
                             {(activeMetrics.profit || 0) >= 0 ? '+' : ''}${(activeMetrics.profit || 0).toFixed(2)}
                           </span>

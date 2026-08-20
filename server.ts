@@ -570,10 +570,24 @@ async function startServer() {
       });
 
       const posData: any = posRes.data;
-      const positions = Array.isArray(posData) ? posData : (posData.positions || []);
+      let positions: any[] = [];
+      if (Array.isArray(posData)) {
+        positions = posData;
+      } else if (posData) {
+        const rawResults = posData.results || posData.positions || posData.data || posData.items || [];
+        positions = Array.isArray(rawResults) ? [...rawResults] : [];
+        if (Array.isArray(posData.options_positions)) {
+          positions.push(...posData.options_positions);
+        }
+        if (Array.isArray(posData.option_positions)) {
+          positions.push(...posData.option_positions);
+        }
+      }
+      console.log(`[SnapTrade] Fetched ${positions.length} positions for account ${accountId}`);
       res.json({
         isMock: false,
-        positions
+        positions,
+        raw: posData
       });
     } catch (error: any) {
       console.error(`[SnapTrade] Error fetching positions for ${accountId}:`, error.response?.data || error.message);
