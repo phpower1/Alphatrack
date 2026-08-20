@@ -235,6 +235,8 @@ export default function App() {
 
       await Promise.all(
         fetchedAccounts.map(async (acc) => {
+          let accountTrades: Trade[] = [];
+
           // Activities / Transactions
           try {
             const actRes = await fetch(`/api/snaptrade/accounts/${acc.id}/activities?uid=${encodeURIComponent(uid)}`);
@@ -245,7 +247,7 @@ export default function App() {
             const tradeItems = items.filter(isTradeActivity);
 
             // Parse activities with Tasty parser
-            const accountTrades: Trade[] = tradeItems.map((act: any, idx: number) => {
+            accountTrades = tradeItems.map((act: any, idx: number) => {
               const details = parseTastyTradeItem(act);
               const sym = details.fullSymbol || details.rootSymbol || 'UNKNOWN';
               const isBuy = details.actionType === 'Buy';
@@ -320,7 +322,7 @@ export default function App() {
             // If broker positions endpoint is empty for this account (e.g. Tasty options cache),
             // derive open positions strictly from the active unexpired open trades of THIS account!
             if (parsedPositions.length === 0) {
-              const openAccountTrades = (allTrades || []).filter(t => t.accountId === acc.id && t.status === 'Open');
+              const openAccountTrades = accountTrades.filter(t => t.status === 'Open');
               const derivedPositions: Position[] = openAccountTrades.map((t, idx) => {
                 const units = t.details?.signedQuantity ?? (t.type === 'Buy' ? t.quantity : -t.quantity);
                 const currentPrice = t.price;
