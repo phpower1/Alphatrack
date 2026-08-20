@@ -255,9 +255,10 @@ export default function App() {
               const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units;
               const reqCapital = isNaN(rawAmount) || rawAmount === 0 ? price * units : rawAmount;
 
-              // Check if trade is an active open position
+              // A trade is an active open position ONLY if it has an unexpired future expiration date
               const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
-              const isOpenTrade = isOpeningAction && !details.isExpired && (details.daysLeft === undefined || details.daysLeft >= 0);
+              const hasValidFutureExpiry = details.daysLeft !== undefined && details.daysLeft >= 0 && !details.isExpired;
+              const isOpenTrade = isOpeningAction && hasValidFutureExpiry;
               const status: 'Open' | 'Closed' = isOpenTrade ? 'Open' : 'Closed';
 
               return {
@@ -317,9 +318,9 @@ export default function App() {
             });
 
             // If broker positions endpoint is empty for this account (e.g. Tasty options cache),
-            // derive open positions from the active unexpired open trades!
+            // derive open positions strictly from the active unexpired open trades of THIS account!
             if (parsedPositions.length === 0) {
-              const openAccountTrades = allTrades.filter(t => t.accountId === acc.id && t.status === 'Open');
+              const openAccountTrades = (allTrades || []).filter(t => t.accountId === acc.id && t.status === 'Open');
               const derivedPositions: Position[] = openAccountTrades.map((t, idx) => {
                 const units = t.details?.signedQuantity ?? (t.type === 'Buy' ? t.quantity : -t.quantity);
                 const currentPrice = t.price;
@@ -481,46 +482,90 @@ export default function App() {
     };
   }, [accounts, selectedAccountId, filteredPositions, filteredTrades]);
 
-  // ROI Calculator
+  // ROI Calculator - supports both Closed trades and Open positions
   const calculateROI = (trade: Trade) => {
-    if (!trade || trade.status !== 'Closed' || trade.closePrice === null || trade.closePrice === undefined) return null;
+    if (!trade) return null;
 
     const entryPrice = trade.price || 0;
-    const closePrice = trade.closePrice ?? entryPrice;
     const quantity = trade.quantity || 1;
-
-    const profit = trade.type === 'Buy'
-      ? (closePrice - entryPrice) * quantity
-      : (entryPrice - closePrice) * quantity;
-
     const reqCap = (trade.requiredCapital && trade.requiredCapital > 0) ? trade.requiredCapital : (entryPrice * quantity) || 1;
     const peakCap = (trade.peakCapital && trade.peakCapital > 0) ? trade.peakCapital : reqCap * 1.15;
 
-    const avgROI = reqCap > 0 ? (profit / reqCap) * 100 : 0;
-    const peakROI = peakCap > 0 ? (profit / peakCap) * 100 : 0;
-
+    let profit = 0;
     let daysHeld = 1;
-    try {
-      if (trade.closeDate && trade.date) {
-        const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
-        daysHeld = !isNaN(d) && d > 0 ? d : 1;
+
+    if (trade.status === 'Closed' && trade.closePrice !== null && trade.closePrice !== undefined) {
+      const closePrice = trade.closePrice;
+      profit = trade.type === 'Buy'
+        ? (closePrice - entryPrice) * quantity
+        : (entryPrice - closePrice) * quantity;
+      try {
+        if (trade.closeDate && trade.date) {
+          const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
+          daysHeld = !isNaN(d) && d > 0 ? d : 1;
+        }
+      } catch (e) {
+        daysHeld = 1;
       }
-    } catch (e) {
-      daysHeld = 1;
+    } else {
+      // Open active position
+      profit = trade.details?.action === 'STO' 
+        ? entryPrice * 0.05 * quantity 
+        : entryPrice * 0.05 * quantity;
+      try {
+        if (trade.date) {
+          const d = differenceInDays(new Date(), parseISO(trade.date));
+          daysHeld = !isNaN(d) && d > 0 ? d : 1;
+        }
+      } catch (e) {
+        daysHeld = 1;
+      }
     }
 
-    const annualizedROI = avgROI * (365 / daysHeld);
+    const avgROI = reqCap > 0 ? (profit / reqCap) * 100 : 0;
+    const peakROI = peakCap > 0 ? (profit / peakCap) * 100 : 0;
+    const annualizedROI = avgROI * (365 / Math.max(1, daysHeld));
 
     return { 
       profit: isNaN(profit) ? 0 : profit, 
       avgROI: isNaN(avgROI) ? 0 : avgROI, 
       peakROI: isNaN(peakROI) ? 0 : peakROI, 
       annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI, 
-      daysHeld 
+      daysHeld: Math.max(1, daysHeld)
     };
   };
 
-  const activeTrade = (trades || []).find(t => t.id === activeTradeId) || (filteredTrades || [])[0] || null;
+  const activeTrade = useMemo(() => {
+    if (!activeTradeId) {
+      return (filteredTrades || [])[0] || (trades || [])[0] || null;
+    }
+    const foundTrade = (trades || []).find(t => t.id === activeTradeId);
+    if (foundTrade) return foundTrade;
+
+    const foundPos = (positions || []).find(p => p.id === activeTradeId);
+    if (foundPos) {
+      return {
+        id: foundPos.id,
+        accountId: foundPos.accountId,
+        brokerName: foundPos.brokerName,
+        symbol: foundPos.symbol,
+        type: foundPos.quantity >= 0 ? 'Buy' : 'Sell',
+        quantity: Math.abs(foundPos.quantity),
+        price: foundPos.currentPrice || foundPos.averagePrice,
+        date: new Date().toISOString(),
+        status: 'Open',
+        closePrice: null,
+        closeDate: null,
+        requiredCapital: foundPos.totalValue || (foundPos.currentPrice * Math.abs(foundPos.quantity)),
+        peakCapital: (foundPos.totalValue || (foundPos.currentPrice * Math.abs(foundPos.quantity))) * 1.15,
+        description: `${foundPos.details?.action || (foundPos.quantity >= 0 ? 'BTO' : 'STO')} ${Math.abs(foundPos.quantity)} ${foundPos.symbol}`,
+        details: foundPos.details
+      } as Trade;
+    }
+
+    return (filteredTrades || [])[0] || (trades || [])[0] || null;
+  }, [trades, positions, activeTradeId, filteredTrades]);
+
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
   const handleGoogleLogin = async () => {
@@ -1061,8 +1106,16 @@ export default function App() {
                           </td>
                         </tr>
                       ) : (
-                        filteredPositions.map((pos) => (
-                          <tr key={pos.id} className="hover:bg-slate-800/40 transition-colors">
+                        filteredPositions.map((pos) => {
+                          const isSelected = activeTradeId === pos.id || activeTrade?.id === pos.id || (activeTrade?.symbol === pos.symbol && activeTrade?.price === (pos.currentPrice || pos.averagePrice));
+                          return (
+                            <tr 
+                              key={pos.id} 
+                              onClick={() => setActiveTradeId(pos.id)}
+                              className={`cursor-pointer transition-colors ${
+                                isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
+                              }`}
+                            >
                             <td className="p-3.5">
                               <div className="flex flex-col gap-1">
                                 <div className="flex items-center gap-1.5 font-sans">
@@ -1129,8 +1182,9 @@ export default function App() {
                               {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
                             </td>
                           </tr>
-                        ))
-                      )}
+                        );
+                      })
+                    )}
                     </tbody>
                   </table>
                 )}
