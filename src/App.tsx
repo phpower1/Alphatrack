@@ -238,10 +238,13 @@ export default function App() {
               const sym = act.symbol?.symbol || act.option_symbol?.ticker || act.description?.split(' ')[1] || 'UNKNOWN';
               const rawType = (act.type || 'BUY').toUpperCase();
               const isBuy = rawType.includes('BUY');
-              const units = Math.abs(parseFloat(act.units || '1'));
-              const price = Math.abs(parseFloat(act.price || (act.amount ? Math.abs(act.amount / units) : 100)));
+              const rawUnits = parseFloat(act.units || '1');
+              const units = isNaN(rawUnits) || rawUnits === 0 ? 1 : Math.abs(rawUnits);
+              const rawPrice = parseFloat(act.price || (act.amount ? Math.abs(act.amount / units) : 100));
+              const price = isNaN(rawPrice) ? 100 : Math.abs(rawPrice);
               const tradeDate = act.trade_date || act.settlement_date || new Date().toISOString().split('T')[0];
-              const reqCapital = Math.abs(act.amount ? Math.abs(act.amount) : price * units);
+              const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units;
+              const reqCapital = isNaN(rawAmount) ? price * units : rawAmount;
 
               return {
                 id: act.id || `${acc.id}-${idx}`,
@@ -274,10 +277,14 @@ export default function App() {
 
             const parsedPositions: Position[] = pItems.map((p: any, idx: number) => {
               const sym = p.symbol?.symbol || p.symbol?.raw_symbol || 'UNKNOWN';
-              const units = parseFloat(p.units || '0');
-              const currentPrice = parseFloat(p.price || '0');
-              const avgPrice = parseFloat(p.average_purchase_price || currentPrice);
-              const openPnl = parseFloat(p.open_pnl || ((currentPrice - avgPrice) * units));
+              const rawUnits = parseFloat(p.units || '0');
+              const units = isNaN(rawUnits) ? 0 : rawUnits;
+              const rawPrice = parseFloat(p.price || '0');
+              const currentPrice = isNaN(rawPrice) ? 0 : rawPrice;
+              const rawAvg = parseFloat(p.average_purchase_price || currentPrice);
+              const avgPrice = isNaN(rawAvg) ? currentPrice : rawAvg;
+              const rawPnl = parseFloat(p.open_pnl ?? ((currentPrice - avgPrice) * units));
+              const openPnl = isNaN(rawPnl) ? (currentPrice - avgPrice) * units : rawPnl;
 
               return {
                 id: `${acc.id}-pos-${idx}`,
@@ -331,7 +338,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           uid: user.uid,
-          reconnect: reconnectId || undefined,
+          reconnect: typeof reconnectId === 'string' && reconnectId.trim() ? reconnectId.trim() : undefined,
           connectionType: 'trade-if-available'
         })
       });
@@ -413,34 +420,56 @@ export default function App() {
 
     const totalNetLiq = relevantAccounts.reduce((sum, a) => sum + (a.balance?.total?.amount || 0), 0);
     const totalCash = relevantAccounts.reduce((sum, a) => sum + (a.balance?.cash?.amount || 0), 0);
-    const positionsValue = filteredPositions.reduce((sum, p) => sum + p.totalValue, 0);
+    const positionsValue = (filteredPositions || []).reduce((sum, p) => sum + (p.totalValue || 0), 0);
 
     return {
-      netLiq: totalNetLiq || positionsValue,
-      cash: totalCash,
-      positionsCount: filteredPositions.length,
-      tradesCount: filteredTrades.length,
+      netLiq: totalNetLiq || positionsValue || 0,
+      cash: totalCash || 0,
+      positionsCount: (filteredPositions || []).length,
+      tradesCount: (filteredTrades || []).length,
     };
   }, [accounts, selectedAccountId, filteredPositions, filteredTrades]);
 
   // ROI Calculator
   const calculateROI = (trade: Trade) => {
-    if (trade.status !== 'Closed' || !trade.closePrice || !trade.closeDate) return null;
+    if (!trade || trade.status !== 'Closed' || trade.closePrice === null || trade.closePrice === undefined) return null;
+
+    const entryPrice = trade.price || 0;
+    const closePrice = trade.closePrice ?? entryPrice;
+    const quantity = trade.quantity || 1;
 
     const profit = trade.type === 'Buy'
-      ? (trade.closePrice - trade.price) * trade.quantity
-      : (trade.price - trade.closePrice) * trade.quantity;
+      ? (closePrice - entryPrice) * quantity
+      : (entryPrice - closePrice) * quantity;
 
-    const avgROI = trade.requiredCapital > 0 ? (profit / trade.requiredCapital) * 100 : 0;
-    const peakROI = trade.peakCapital > 0 ? (profit / trade.peakCapital) * 100 : 0;
+    const reqCap = (trade.requiredCapital && trade.requiredCapital > 0) ? trade.requiredCapital : (entryPrice * quantity) || 1;
+    const peakCap = (trade.peakCapital && trade.peakCapital > 0) ? trade.peakCapital : reqCap * 1.15;
 
-    const daysHeld = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date)) || 1;
+    const avgROI = reqCap > 0 ? (profit / reqCap) * 100 : 0;
+    const peakROI = peakCap > 0 ? (profit / peakCap) * 100 : 0;
+
+    let daysHeld = 1;
+    try {
+      if (trade.closeDate && trade.date) {
+        const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
+        daysHeld = !isNaN(d) && d > 0 ? d : 1;
+      }
+    } catch (e) {
+      daysHeld = 1;
+    }
+
     const annualizedROI = avgROI * (365 / daysHeld);
 
-    return { profit, avgROI, peakROI, annualizedROI, daysHeld };
+    return { 
+      profit: isNaN(profit) ? 0 : profit, 
+      avgROI: isNaN(avgROI) ? 0 : avgROI, 
+      peakROI: isNaN(peakROI) ? 0 : peakROI, 
+      annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI, 
+      daysHeld 
+    };
   };
 
-  const activeTrade = trades.find(t => t.id === activeTradeId) || filteredTrades[0];
+  const activeTrade = (trades || []).find(t => t.id === activeTradeId) || (filteredTrades || [])[0] || null;
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
   const handleGoogleLogin = async () => {
@@ -865,16 +894,16 @@ export default function App() {
                               </td>
                               <td className="p-3.5 text-slate-400">{trade.date}</td>
                               <td className={`p-3.5 font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
+                                {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${(metrics.profit || 0).toFixed(2)}` : '-'}
                               </td>
                               <td className="p-3.5 text-slate-300">
-                                {metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}
+                                {metrics ? `${(metrics.avgROI || 0).toFixed(1)}%` : '-'}
                               </td>
                               <td className="p-3.5 text-slate-300">
-                                {metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}
+                                {metrics ? `${(metrics.peakROI || 0).toFixed(1)}%` : '-'}
                               </td>
                               <td className="p-3.5 text-indigo-300 font-semibold">
-                                {metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}
+                                {metrics ? `${(metrics.annualizedROI || 0).toFixed(1)}%` : '-'}
                               </td>
                             </tr>
                           );
@@ -912,11 +941,11 @@ export default function App() {
                               </span>
                             </td>
                             <td className="p-3.5 text-slate-300">{pos.quantity}</td>
-                            <td className="p-3.5 text-slate-400">${pos.averagePrice.toFixed(2)}</td>
-                            <td className="p-3.5 text-slate-200 font-semibold">${pos.currentPrice.toFixed(2)}</td>
-                            <td className="p-3.5 font-bold text-white">${pos.totalValue.toFixed(2)}</td>
-                            <td className={`p-3.5 font-bold ${pos.openPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {pos.openPnl >= 0 ? '+' : ''}${pos.openPnl.toFixed(2)}
+                            <td className="p-3.5 text-slate-400">${(pos.averagePrice || 0).toFixed(2)}</td>
+                            <td className="p-3.5 text-slate-200 font-semibold">${(pos.currentPrice || 0).toFixed(2)}</td>
+                            <td className="p-3.5 font-bold text-white">${(pos.totalValue || 0).toFixed(2)}</td>
+                            <td className={`p-3.5 font-bold ${(pos.openPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
                             </td>
                           </tr>
                         ))
@@ -949,15 +978,15 @@ export default function App() {
 
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
-                          <div className={`text-xl font-bold font-mono mb-1 ${activeMetrics.avgROI >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {activeMetrics.avgROI >= 0 ? '+' : ''}{activeMetrics.avgROI.toFixed(1)}%
+                          <div className={`text-xl font-bold font-mono mb-1 ${(activeMetrics.avgROI || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {(activeMetrics.avgROI || 0) >= 0 ? '+' : ''}{(activeMetrics.avgROI || 0).toFixed(1)}%
                           </div>
                           <div className="text-[10px] uppercase font-medium text-slate-400">Avg Capital ROI</div>
                         </div>
 
                         <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
-                          <div className={`text-xl font-bold font-mono mb-1 ${activeMetrics.peakROI >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {activeMetrics.peakROI >= 0 ? '+' : ''}{activeMetrics.peakROI.toFixed(1)}%
+                          <div className={`text-xl font-bold font-mono mb-1 ${(activeMetrics.peakROI || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            {(activeMetrics.peakROI || 0) >= 0 ? '+' : ''}{(activeMetrics.peakROI || 0).toFixed(1)}%
                           </div>
                           <div className="text-[10px] uppercase font-medium text-slate-400">Peak Capital ROI</div>
                         </div>
@@ -970,29 +999,29 @@ export default function App() {
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
-                          <span className="text-slate-200">${activeTrade.price.toFixed(2)} × {activeTrade.quantity}</span>
+                          <span className="text-slate-200">${(activeTrade.price || 0).toFixed(2)} × {activeTrade.quantity || 1}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Required Capital:</span>
-                          <span className="text-slate-200">${activeTrade.requiredCapital.toFixed(2)}</span>
+                          <span className="text-slate-200">${(activeTrade.requiredCapital || 0).toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
-                          <span className="text-slate-200">${activeTrade.peakCapital.toFixed(2)}</span>
+                          <span className="text-slate-200">${(activeTrade.peakCapital || 0).toFixed(2)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Realized Gain/Loss:</span>
-                          <span className={activeMetrics.profit >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                            {activeMetrics.profit >= 0 ? '+' : ''}${activeMetrics.profit.toFixed(2)}
+                          <span className={(activeMetrics.profit || 0) >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                            {(activeMetrics.profit || 0) >= 0 ? '+' : ''}${(activeMetrics.profit || 0).toFixed(2)}
                           </span>
                         </div>
                         <div className="flex justify-between border-t border-slate-800/60 pt-2">
                           <span className="text-slate-400 font-sans">Holding Period:</span>
-                          <span className="text-slate-200">{activeMetrics.daysHeld} days</span>
+                          <span className="text-slate-200">{activeMetrics.daysHeld || 1} days</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Annualized ROI:</span>
-                          <span className="text-indigo-400 font-bold">{activeMetrics.annualizedROI.toFixed(1)}%</span>
+                          <span className="text-indigo-400 font-bold">{(activeMetrics.annualizedROI || 0).toFixed(1)}%</span>
                         </div>
                       </div>
 
@@ -1002,7 +1031,7 @@ export default function App() {
                           <span>Capital Efficiency Insight</span>
                         </div>
                         <p className="text-slate-400 text-[11px] leading-relaxed">
-                          Allocated ${activeTrade.requiredCapital.toLocaleString()} at open. Peak exposure reached ${activeTrade.peakCapital.toLocaleString()}, delivering an annualized yield of {activeMetrics.annualizedROI.toFixed(1)}%.
+                          Allocated ${(activeTrade.requiredCapital || 0).toLocaleString()} at open. Peak exposure reached ${(activeTrade.peakCapital || 0).toLocaleString()}, delivering an annualized yield of {(activeMetrics.annualizedROI || 0).toFixed(1)}%.
                         </p>
                       </div>
                     </>
@@ -1056,7 +1085,7 @@ export default function App() {
                 </p>
                 <div className="flex gap-3 justify-center">
                   <Button
-                    onClick={handleOpenConnectionPortal}
+                    onClick={() => handleOpenConnectionPortal()}
                     className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 cursor-pointer"
                   >
                     Try Again
