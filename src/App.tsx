@@ -210,7 +210,32 @@ export default function App() {
       // 1. Fetch Accounts
       const accRes = await fetch(`/api/snaptrade/accounts?uid=${encodeURIComponent(uid)}`);
       const accData = await accRes.json();
-      const fetchedAccounts: SnapTradeAccount[] = accData.items || [];
+      const rawAccounts: SnapTradeAccount[] = accData.items || [];
+
+      // Fetch live balances (Option BP / Cash / NetLiq) for each account
+      const fetchedAccounts: SnapTradeAccount[] = await Promise.all(
+        rawAccounts.map(async (acc) => {
+          try {
+            const balRes = await fetch(`/api/snaptrade/accounts/${acc.id}/balances?uid=${encodeURIComponent(uid)}`);
+            const balData = await balRes.json();
+            const balances = Array.isArray(balData) ? balData : (balData.data || [balData]);
+            const primaryBal = balances[0] || {};
+            
+            const totalAmount = primaryBal.total?.amount ?? primaryBal.amount ?? primaryBal.cash ?? (acc.balance?.total?.amount || 0);
+            const cashAmount = primaryBal.cash ?? primaryBal.buying_power ?? primaryBal.option_buying_power ?? (acc.balance?.cash?.amount || 0);
+
+            return {
+              ...acc,
+              balance: {
+                total: { amount: totalAmount, currency: primaryBal.currency?.code || primaryBal.currency || "USD" },
+                cash: { amount: cashAmount, currency: primaryBal.currency?.code || primaryBal.currency || "USD" }
+              }
+            };
+          } catch {
+            return acc;
+          }
+        })
+      );
       setAccounts(fetchedAccounts);
 
       // 2. Fetch Connections
