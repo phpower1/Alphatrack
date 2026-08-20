@@ -33,6 +33,12 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { auth, loginWithGoogle, logout, db } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { getDocFromServer, doc } from 'firebase/firestore';
+import { 
+  parseTastyTradeItem, 
+  isTradeActivity, 
+  formatTradeDateTime, 
+  ParsedOptionDetails 
+} from './utils/tastyParser';
 
 interface SnapTradeAccount {
   id: string;
@@ -65,6 +71,7 @@ interface Trade {
   requiredCapital: number;
   peakCapital: number;
   description?: string;
+  details?: ParsedOptionDetails;
 }
 
 interface Position {
@@ -77,6 +84,7 @@ interface Position {
   currentPrice: number;
   totalValue: number;
   openPnl: number;
+  details?: ParsedOptionDetails;
 }
 
 interface BrokerageConnection {
@@ -233,18 +241,19 @@ export default function App() {
             const actData = await actRes.json();
             const items = actData.data || [];
 
-            // Group buy/sell by symbol to calculate closed trades & capital
-            const accountTrades: Trade[] = items.map((act: any, idx: number) => {
-              const sym = act.symbol?.symbol || act.option_symbol?.ticker || act.description?.split(' ')[1] || 'UNKNOWN';
-              const rawType = (act.type || 'BUY').toUpperCase();
-              const isBuy = rawType.includes('BUY');
-              const rawUnits = parseFloat(act.units || '1');
-              const units = isNaN(rawUnits) || rawUnits === 0 ? 1 : Math.abs(rawUnits);
-              const rawPrice = parseFloat(act.price || (act.amount ? Math.abs(act.amount / units) : 100));
-              const price = isNaN(rawPrice) ? 100 : Math.abs(rawPrice);
-              const tradeDate = act.trade_date || act.settlement_date || new Date().toISOString().split('T')[0];
+            // Filter out non-trade events (e.g. fees, deposits, interest)
+            const tradeItems = items.filter(isTradeActivity);
+
+            // Parse activities with Tasty parser
+            const accountTrades: Trade[] = tradeItems.map((act: any, idx: number) => {
+              const details = parseTastyTradeItem(act);
+              const sym = details.fullSymbol || details.rootSymbol || 'UNKNOWN';
+              const isBuy = details.actionType === 'Buy';
+              const units = details.quantity;
+              const price = details.price;
+              const tradeDate = act.trade_date || act.settlement_date || new Date().toISOString();
               const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units;
-              const reqCapital = isNaN(rawAmount) ? price * units : rawAmount;
+              const reqCapital = isNaN(rawAmount) || rawAmount === 0 ? price * units : rawAmount;
 
               return {
                 id: act.id || `${acc.id}-${idx}`,
@@ -260,7 +269,8 @@ export default function App() {
                 closeDate: tradeDate,
                 requiredCapital: reqCapital,
                 peakCapital: reqCapital * 1.15,
-                description: act.description || `${rawType} ${units} ${sym}`
+                description: act.description || `${details.action} ${units} ${sym}`,
+                details: details
               };
             });
 
@@ -276,7 +286,8 @@ export default function App() {
             const pItems = posData.positions || [];
 
             const parsedPositions: Position[] = pItems.map((p: any, idx: number) => {
-              const sym = p.symbol?.symbol || p.symbol?.raw_symbol || 'UNKNOWN';
+              const details = parseTastyTradeItem(p);
+              const sym = details.fullSymbol || details.rootSymbol || p.symbol?.symbol || p.symbol?.raw_symbol || 'UNKNOWN';
               const rawUnits = parseFloat(p.units || '0');
               const units = isNaN(rawUnits) ? 0 : rawUnits;
               const rawPrice = parseFloat(p.price || '0');
@@ -295,7 +306,8 @@ export default function App() {
                 averagePrice: avgPrice,
                 currentPrice: currentPrice,
                 totalValue: units * currentPrice,
-                openPnl: openPnl
+                openPnl: openPnl,
+                details: details
               };
             });
 
@@ -391,6 +403,11 @@ export default function App() {
       list = list.filter(t => 
         t.symbol.toLowerCase().includes(q) || 
         t.brokerName.toLowerCase().includes(q) ||
+        (t.details?.rootSymbol && t.details.rootSymbol.toLowerCase().includes(q)) ||
+        (t.details?.futureCycle && t.details.futureCycle.toLowerCase().includes(q)) ||
+        (t.details?.expirationFormatted && t.details.expirationFormatted.toLowerCase().includes(q)) ||
+        (t.details?.strikeFormatted && t.details.strikeFormatted.toLowerCase().includes(q)) ||
+        (t.details?.action && t.details.action.toLowerCase().includes(q)) ||
         (t.description && t.description.toLowerCase().includes(q))
       );
     }
@@ -406,7 +423,9 @@ export default function App() {
       const q = searchFilter.toLowerCase();
       list = list.filter(p => 
         p.symbol.toLowerCase().includes(q) || 
-        p.brokerName.toLowerCase().includes(q)
+        p.brokerName.toLowerCase().includes(q) ||
+        (p.details?.rootSymbol && p.details.rootSymbol.toLowerCase().includes(q)) ||
+        (p.details?.futureCycle && p.details.futureCycle.toLowerCase().includes(q))
       );
     }
     return list;
@@ -873,6 +892,7 @@ export default function App() {
                         filteredTrades.map((trade) => {
                           const metrics = calculateROI(trade);
                           const isSelected = activeTradeId === trade.id;
+                          const action = trade.details?.action || trade.type;
                           return (
                             <tr
                               key={trade.id}
@@ -881,18 +901,77 @@ export default function App() {
                                 isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
                               }`}
                             >
-                              <td className="p-3.5 font-bold text-indigo-400">{trade.symbol}</td>
+                              <td className="p-3.5">
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-bold text-white tracking-tight font-mono text-[13px]">
+                                      {trade.details?.rootSymbol || trade.symbol}
+                                    </span>
+                                    {trade.details?.futureCycle && (
+                                      <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
+                                        {trade.details.futureCycle}
+                                      </span>
+                                    )}
+                                    {trade.details?.isOption && (
+                                      <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                                        {trade.details.isFuture ? 'Fut Opt' : 'Option'}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {trade.details?.isOption && (
+                                    <div className="flex items-center gap-1.5 text-[11px]">
+                                      <span className="bg-slate-800 text-slate-200 px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border border-slate-700">
+                                        {trade.details.action === 'STO' || trade.details.action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
+                                      </span>
+                                      {trade.details.expirationFormatted && (
+                                        <span className="text-slate-300 font-medium">{trade.details.expirationFormatted}</span>
+                                      )}
+                                      {trade.details.dte !== undefined && (
+                                        <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
+                                          {trade.details.dte}d
+                                        </span>
+                                      )}
+                                      {trade.details.strikeFormatted && (
+                                        <span className="font-mono font-bold text-slate-100">{trade.details.strikeFormatted}</span>
+                                      )}
+                                      {trade.details.optionTypeShort && (
+                                        <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                          trade.details.optionTypeShort === 'P'
+                                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                        }`}>
+                                          {trade.details.optionTypeShort}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </td>
                               <td className="p-3.5 font-sans">
                                 <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
                                   {trade.brokerName}
                                 </span>
                               </td>
                               <td className="p-3.5">
-                                <span className={trade.type === 'Buy' ? 'text-emerald-400' : 'text-amber-400'}>
-                                  {trade.type} {trade.quantity}
+                                <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border ${
+                                  action === 'BTO' || action === 'Buy'
+                                    ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                    : action === 'STO' || action === 'Sell'
+                                    ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                    : action === 'BTC'
+                                    ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
+                                    : action === 'STC'
+                                    ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                    : action === 'EXPIRED'
+                                    ? 'bg-slate-800 text-slate-400 border-slate-700'
+                                    : 'bg-slate-800 text-slate-300 border-slate-700'
+                                }`}>
+                                  {action} {trade.quantity}
                                 </span>
                               </td>
-                              <td className="p-3.5 text-slate-400">{trade.date}</td>
+                              <td className="p-3.5 text-slate-400 text-xs font-sans">
+                                {formatTradeDateTime(trade.date)}
+                              </td>
                               <td className={`p-3.5 font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
                                 {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${(metrics.profit || 0).toFixed(2)}` : '-'}
                               </td>
@@ -934,7 +1013,52 @@ export default function App() {
                       ) : (
                         filteredPositions.map((pos) => (
                           <tr key={pos.id} className="hover:bg-slate-800/40 transition-colors">
-                            <td className="p-3.5 font-bold text-indigo-400">{pos.symbol}</td>
+                            <td className="p-3.5">
+                              <div className="flex flex-col gap-1">
+                                <div className="flex items-center gap-1.5 font-sans">
+                                  <span className="font-bold text-white tracking-tight font-mono text-[13px]">
+                                    {pos.details?.rootSymbol || pos.symbol}
+                                  </span>
+                                  {pos.details?.futureCycle && (
+                                    <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
+                                      {pos.details.futureCycle}
+                                    </span>
+                                  )}
+                                  {pos.details?.isOption && (
+                                    <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                                      {pos.details.isFuture ? 'Fut Opt' : 'Option'}
+                                    </span>
+                                  )}
+                                </div>
+                                {pos.details?.isOption && (
+                                  <div className="flex items-center gap-1.5 text-[11px]">
+                                    <span className="bg-slate-800 text-slate-200 px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border border-slate-700">
+                                      {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
+                                    </span>
+                                    {pos.details.expirationFormatted && (
+                                      <span className="text-slate-300 font-medium">{pos.details.expirationFormatted}</span>
+                                    )}
+                                    {pos.details.dte !== undefined && (
+                                      <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
+                                        {pos.details.dte}d
+                                      </span>
+                                    )}
+                                    {pos.details.strikeFormatted && (
+                                      <span className="font-mono font-bold text-slate-100">{pos.details.strikeFormatted}</span>
+                                    )}
+                                    {pos.details.optionTypeShort && (
+                                      <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                        pos.details.optionTypeShort === 'P'
+                                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                      }`}>
+                                        {pos.details.optionTypeShort}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </td>
                             <td className="p-3.5 font-sans">
                               <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
                                 {pos.brokerName}
@@ -969,12 +1093,79 @@ export default function App() {
 
                   {activeTrade && activeMetrics ? (
                     <>
-                      <div className="text-xs text-slate-400 mb-4 flex items-center justify-between">
-                        <span>Selected Trade:</span>
-                        <span className="font-semibold text-white">
-                          {activeTrade.symbol} ({activeTrade.brokerName})
-                        </span>
+                      <div className="mb-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <span className="text-lg font-bold text-white font-mono">
+                              {activeTrade.details?.rootSymbol || activeTrade.symbol}
+                            </span>
+                            {activeTrade.details?.futureCycle && (
+                              <span className="bg-[#1f2430] text-indigo-300 font-mono text-xs font-bold px-2 py-0.5 rounded border border-indigo-500/30">
+                                {activeTrade.details.futureCycle}
+                              </span>
+                            )}
+                          </div>
+                          <span className="bg-slate-800 text-slate-300 px-2.5 py-0.5 rounded text-[11px] font-medium border border-slate-700">
+                            {activeTrade.brokerName}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 mt-1 font-sans">
+                          {activeTrade.details?.isOption 
+                            ? (activeTrade.details.isFuture ? 'Option on Future Contract' : 'Equity Option Contract')
+                            : (activeTrade.details?.isFuture ? 'Futures Instrument' : 'Equity Asset')}
+                        </div>
                       </div>
+
+                      {/* Tasty-Style Option Contract Card */}
+                      {activeTrade.details?.isOption && (
+                        <div className="bg-[#181a22] border border-slate-800/90 rounded-xl p-3 mb-4 font-sans">
+                          <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2.5 border-b border-slate-800 pb-2">
+                            <span className="font-semibold text-slate-300">Order Chain Leg</span>
+                            <span className="font-mono text-emerald-400 font-bold">
+                              ${(activeTrade.price || 0).toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {activeTrade.details.futureCycle && (
+                                <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
+                                  {activeTrade.details.futureCycle}
+                                </span>
+                              )}
+                              <span className="bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold border border-slate-700">
+                                {activeTrade.details.action === 'STO' || activeTrade.details.action === 'STC' ? `-${activeTrade.quantity}` : `+${activeTrade.quantity}`}
+                              </span>
+                              <span className="text-slate-200 text-xs font-medium">
+                                {activeTrade.details.expirationFormatted}
+                              </span>
+                              {activeTrade.details.dte !== undefined && (
+                                <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">
+                                  {activeTrade.details.dte}d
+                                </span>
+                              )}
+                              <span className="font-mono text-xs font-bold text-white">
+                                {activeTrade.details.strikeFormatted}
+                              </span>
+                              {activeTrade.details.optionTypeShort && (
+                                <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
+                                  activeTrade.details.optionTypeShort === 'P'
+                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                }`}>
+                                  {activeTrade.details.optionTypeShort} ({activeTrade.details.optionType})
+                                </span>
+                              )}
+                            </div>
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${
+                              activeTrade.details.action === 'BTO' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' :
+                              activeTrade.details.action === 'STO' ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
+                              'bg-slate-800 text-slate-300 border border-slate-700'
+                            }`}>
+                              {activeTrade.details.action}
+                            </span>
+                          </div>
+                        </div>
+                      )}
 
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
@@ -995,7 +1186,7 @@ export default function App() {
                       <div className="mt-6 space-y-3 font-mono text-xs border-t border-slate-800/80 pt-4">
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Execution Date:</span>
-                          <span className="text-slate-200">{activeTrade.date}</span>
+                          <span className="text-slate-200">{formatTradeDateTime(activeTrade.date)}</span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
