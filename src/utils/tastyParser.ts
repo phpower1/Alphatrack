@@ -402,3 +402,261 @@ export function isTradeActivity(act: any): boolean {
   }
   return true;
 }
+
+export interface StrategyGroupInfo {
+  strategyName: string;
+  strategyType: 'Ratio' | 'Vertical' | 'Iron Condor' | 'Iron Fly' | 'Strangle' | 'Straddle' | 'Calendar' | 'Diagonal' | 'Butterfly' | 'Single' | 'Stock' | 'Custom';
+}
+
+/**
+ * Detect option strategy given an array of legs
+ */
+export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quantity?: number; type?: string; price?: number }[]): StrategyGroupInfo {
+  if (!legs || legs.length === 0) {
+    return { strategyName: 'Unknown', strategyType: 'Custom' };
+  }
+
+  const optionLegs = legs.filter(l => l.details?.isOption);
+  if (optionLegs.length === 0) {
+    return { strategyName: 'Equity / Stock', strategyType: 'Stock' };
+  }
+
+  if (optionLegs.length === 1) {
+    const leg = optionLegs[0];
+    const isFuture = leg.details?.isFuture;
+    const optType = leg.details?.optionType || 'Option';
+    const action = leg.details?.action;
+    const isShort = action === 'STO' || (leg.details?.signedQuantity && leg.details.signedQuantity < 0) || ((leg.quantity || 0) < 0);
+    const prefix = isShort ? 'Short' : 'Long';
+    const name = isFuture ? 'Futures Option' : `${prefix} ${optType === 'CALL' ? 'Call' : 'Put'}`;
+    return { strategyName: name, strategyType: 'Single' };
+  }
+
+  if (optionLegs.length === 2) {
+    const leg1 = optionLegs[0].details;
+    const leg2 = optionLegs[1].details;
+    if (leg1 && leg2) {
+      const q1 = leg1.signedQuantity || (leg1.action === 'STO' ? -leg1.quantity : leg1.quantity);
+      const q2 = leg2.signedQuantity || (leg2.action === 'STO' ? -leg2.quantity : leg2.quantity);
+      const sameExp = leg1.expirationDate && leg2.expirationDate && leg1.expirationDate === leg2.expirationDate;
+      const sameType = leg1.optionType === leg2.optionType;
+
+      if (sameExp) {
+        if (sameType) {
+          const isOppositeSide = (q1 > 0 && q2 < 0) || (q1 < 0 && q2 > 0);
+          if (isOppositeSide) {
+            const ratio = Math.abs(q1) / Math.abs(q2);
+            if (Math.abs(ratio - 1) < 0.05) {
+              return { strategyName: 'Vertical', strategyType: 'Vertical' };
+            } else {
+              return { strategyName: 'Ratio', strategyType: 'Ratio' };
+            }
+          } else {
+            return { strategyName: `${leg1.optionType === 'CALL' ? 'Calls' : 'Puts'} Spread`, strategyType: 'Custom' };
+          }
+        } else {
+          if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
+            return { strategyName: 'Straddle', strategyType: 'Straddle' };
+          } else {
+            return { strategyName: 'Strangle', strategyType: 'Strangle' };
+          }
+        }
+      } else {
+        if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
+          return { strategyName: 'Calendar', strategyType: 'Calendar' };
+        } else {
+          return { strategyName: 'Diagonal', strategyType: 'Diagonal' };
+        }
+      }
+    }
+  }
+
+  if (optionLegs.length === 3) {
+    return { strategyName: 'Butterfly', strategyType: 'Butterfly' };
+  }
+
+  if (optionLegs.length === 4) {
+    return { strategyName: 'Iron Condor', strategyType: 'Iron Condor' };
+  }
+
+  return { strategyName: 'Multi-Leg', strategyType: 'Custom' };
+}
+
+export interface StrategyGroup<T> {
+  id: string;
+  strategyName: string;
+  strategyType: string;
+  rootSymbol: string;
+  fullSymbol: string;
+  futureCycle?: string;
+  isFuture: boolean;
+  expirationDate?: string;
+  expirationFormatted?: string;
+  dte?: number;
+  daysLeft?: number;
+  daysLeftFormatted?: string;
+  items: T[];
+  totalQuantity: number;
+  totalValue: number;
+  totalOpenPnl: number;
+  totalRealizedProfit: number;
+  totalRequiredCapital: number;
+  netCostBasis: number;
+  netCurrentPrice: number;
+}
+
+export interface UnderlyingGroup<T> {
+  key: string;
+  symbol: string;
+  rootSymbol: string;
+  futureCycle?: string;
+  isFuture: boolean;
+  totalValue: number;
+  totalOpenPnl: number;
+  totalRealizedProfit: number;
+  totalRequiredCapital: number;
+  strategies: StrategyGroup<T>[];
+  allItemIds: string[];
+}
+
+/**
+ * Groups a collection of items (Positions or Trades) into Tasty-style Underlying -> Strategy -> Legs hierarchy.
+ */
+export function groupItemsByTastyStrategy<T extends { 
+  id: string;
+  symbol: string; 
+  quantity?: number; 
+  price?: number;
+  currentPrice?: number;
+  averagePrice?: number;
+  totalValue?: number;
+  openPnl?: number;
+  requiredCapital?: number;
+  status?: string;
+  details?: ParsedOptionDetails;
+}>(items: T[], calculateMetrics?: (item: T) => { profit?: number; avgROI?: number } | null): UnderlyingGroup<T>[] {
+  if (!items || items.length === 0) return [];
+
+  // Step 1: Group items by Underlying (e.g. /MNQU6, /MESU6, TSLA, NVDA)
+  const byUnderlying: Record<string, T[]> = {};
+
+  for (const item of items) {
+    const sym = item.details?.fullSymbol || item.details?.rootSymbol || item.symbol || 'UNKNOWN';
+    if (!byUnderlying[sym]) {
+      byUnderlying[sym] = [];
+    }
+    byUnderlying[sym].push(item);
+  }
+
+  const underlyingGroups: UnderlyingGroup<T>[] = [];
+
+  for (const [sym, uItems] of Object.entries(byUnderlying)) {
+    const firstItem = uItems[0];
+    const rootSymbol = firstItem.details?.rootSymbol || sym;
+    const futureCycle = firstItem.details?.futureCycle;
+    const isFuture = Boolean(firstItem.details?.isFuture || sym.startsWith('/'));
+
+    // Step 2: Group underlying items by Expiration Date (or non-option stock bucket)
+    const byExp: Record<string, T[]> = {};
+    for (const item of uItems) {
+      const exp = item.details?.isOption ? (item.details?.expirationDate || 'UNKNOWN_EXP') : 'EQUITY';
+      if (!byExp[exp]) {
+        byExp[exp] = [];
+      }
+      byExp[exp].push(item);
+    }
+
+    const strategies: StrategyGroup<T>[] = [];
+
+    for (const [expKey, expItems] of Object.entries(byExp)) {
+      // Classify strategy for this expiration bucket
+      const stratInfo = detectOptionStrategy(expItems);
+      const firstExpItem = expItems[0];
+      const details = firstExpItem.details;
+
+      let totalVal = 0;
+      let totalPnl = 0;
+      let totalRealized = 0;
+      let totalReqCap = 0;
+      let totalQty = 0;
+      let netCost = 0;
+      let netCurr = 0;
+
+      for (const item of expItems) {
+        const qty = item.quantity || 1;
+        const signedQty = item.details?.signedQuantity ?? (item.details?.action === 'STO' || item.details?.action === 'STC' ? -qty : qty);
+        totalQty += signedQty;
+        totalVal += (item.totalValue || 0);
+        totalPnl += (item.openPnl || 0);
+        totalReqCap += (item.requiredCapital || 0);
+        netCost += (item.averagePrice || item.price || 0) * signedQty;
+        netCurr += (item.currentPrice || item.price || 0) * signedQty;
+
+        if (calculateMetrics) {
+          const m = calculateMetrics(item);
+          if (m?.profit) {
+            totalRealized += m.profit;
+          }
+        }
+      }
+
+      strategies.push({
+        id: `${sym}-${expKey}-${stratInfo.strategyType}`,
+        strategyName: stratInfo.strategyName,
+        strategyType: stratInfo.strategyType,
+        rootSymbol,
+        fullSymbol: sym,
+        futureCycle,
+        isFuture,
+        expirationDate: details?.expirationDate,
+        expirationFormatted: details?.expirationFormatted,
+        dte: details?.dte,
+        daysLeft: details?.daysLeft,
+        daysLeftFormatted: details?.daysLeftFormatted,
+        items: expItems,
+        totalQuantity: totalQty,
+        totalValue: totalVal,
+        totalOpenPnl: totalPnl,
+        totalRealizedProfit: totalRealized,
+        totalRequiredCapital: totalReqCap,
+        netCostBasis: netCost,
+        netCurrentPrice: netCurr
+      });
+    }
+
+    // Sort strategies: earliest expiration first
+    strategies.sort((a, b) => {
+      if (!a.expirationDate) return 1;
+      if (!b.expirationDate) return -1;
+      return a.expirationDate.localeCompare(b.expirationDate);
+    });
+
+    const totalUnderlyingValue = strategies.reduce((acc, s) => acc + s.totalValue, 0);
+    const totalUnderlyingOpenPnl = strategies.reduce((acc, s) => acc + s.totalOpenPnl, 0);
+    const totalUnderlyingRealized = strategies.reduce((acc, s) => acc + s.totalRealizedProfit, 0);
+    const totalUnderlyingReqCap = strategies.reduce((acc, s) => acc + s.totalRequiredCapital, 0);
+
+    underlyingGroups.push({
+      key: sym,
+      symbol: sym,
+      rootSymbol,
+      futureCycle,
+      isFuture,
+      totalValue: totalUnderlyingValue,
+      totalOpenPnl: totalUnderlyingOpenPnl,
+      totalRealizedProfit: totalUnderlyingRealized,
+      totalRequiredCapital: totalUnderlyingReqCap,
+      strategies,
+      allItemIds: uItems.map(i => i.id)
+    });
+  }
+
+  // Sort underlyings: futures first, then alphabetical
+  underlyingGroups.sort((a, b) => {
+    if (a.isFuture && !b.isFuture) return -1;
+    if (!a.isFuture && b.isFuture) return 1;
+    return a.symbol.localeCompare(b.symbol);
+  });
+
+  return underlyingGroups;
+}

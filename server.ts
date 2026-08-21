@@ -152,6 +152,75 @@ const MOCK_ACCOUNTS = [
 
 const MOCK_ACTIVITIES: Record<string, any[]> = {
   "mock-acc-tasty-01": [
+    // /MNQU6 Put Ratio Spread - Aug 21 Expiration
+    {
+      id: "act-mnq-aug-1",
+      trade_date: "2026-07-27",
+      settlement_date: "2026-07-28",
+      type: "BUY_TO_OPEN",
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24800", description: "/MNQU6 Aug 21 24800 Put" },
+      option_symbol: { ticker: "260821P24800", expiration_date: "2026-08-21", strike_price: "24800", option_type: "PUT" },
+      units: 1,
+      price: 117.00,
+      amount: -234.00,
+      fee: 1.25,
+      description: "BOT +1 /MNQU6 Aug 21 24800 Put @ 117.00"
+    },
+    {
+      id: "act-mnq-aug-2",
+      trade_date: "2026-07-27",
+      settlement_date: "2026-07-28",
+      type: "SELL_TO_OPEN",
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24500", description: "/MNQU6 Aug 21 24500 Put" },
+      option_symbol: { ticker: "260821P24500", expiration_date: "2026-08-21", strike_price: "24500", option_type: "PUT" },
+      units: -2,
+      price: 93.00,
+      amount: 372.00,
+      fee: 2.50,
+      description: "SLD -2 /MNQU6 Aug 21 24500 Put @ 93.00"
+    },
+    // /MNQU6 Put Ratio Spread - Sep 18 Expiration
+    {
+      id: "act-mnq-sep-1",
+      trade_date: "2026-08-10",
+      settlement_date: "2026-08-11",
+      type: "BUY_TO_OPEN",
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P26100", description: "/MNQU6 Sep 18 26100 Put" },
+      option_symbol: { ticker: "260918P26100", expiration_date: "2026-09-18", strike_price: "26100", option_type: "PUT" },
+      units: 1,
+      price: 96.50,
+      amount: -193.00,
+      fee: 1.25,
+      description: "BOT +1 /MNQU6 Sep 18 26100 Put @ 96.50"
+    },
+    {
+      id: "act-mnq-sep-2",
+      trade_date: "2026-08-10",
+      settlement_date: "2026-08-11",
+      type: "SELL_TO_OPEN",
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P25800", description: "/MNQU6 Sep 18 25800 Put" },
+      option_symbol: { ticker: "260918P25800", expiration_date: "2026-09-18", strike_price: "25800", option_type: "PUT" },
+      units: -2,
+      price: 81.00,
+      amount: 324.00,
+      fee: 2.50,
+      description: "SLD -2 /MNQU6 Sep 18 25800 Put @ 81.00"
+    },
+    // /MESU6 Futures Option - Sep 18 Expiration
+    {
+      id: "act-mes-sep-1",
+      trade_date: "2026-08-11",
+      settlement_date: "2026-08-12",
+      type: "SELL_TO_OPEN",
+      symbol: { symbol: "/MESU6", raw_symbol: "/MESU6 260918P7050", description: "/MESU6 Sep 18 7050 Put" },
+      option_symbol: { ticker: "260918P7050", expiration_date: "2026-09-18", strike_price: "7050", option_type: "PUT" },
+      units: -1,
+      price: 23.75,
+      amount: 118.75,
+      fee: 1.25,
+      description: "SLD -1 /MESU6 Sep 18 7050 Put @ 23.75"
+    },
+    // Historical closed NVDA & TSLA trades
     {
       id: "act-t1",
       trade_date: "2026-08-01",
@@ -175,42 +244,6 @@ const MOCK_ACTIVITIES: Record<string, any[]> = {
       amount: 3205.00,
       fee: 1.05,
       description: "SLD 25 NVDA @ 128.20"
-    },
-    {
-      id: "act-t3",
-      trade_date: "2026-07-15",
-      settlement_date: "2026-07-17",
-      type: "BUY",
-      symbol: { symbol: "SPY", description: "SPDR S&P 500 ETF Trust" },
-      units: 10,
-      price: 545.00,
-      amount: -5450.00,
-      fee: 0,
-      description: "BOT 10 SPY @ 545.00"
-    },
-    {
-      id: "act-t4",
-      trade_date: "2026-08-05",
-      settlement_date: "2026-08-07",
-      type: "SELL",
-      symbol: { symbol: "SPY", description: "SPDR S&P 500 ETF Trust" },
-      units: -10,
-      price: 560.80,
-      amount: 5608.00,
-      fee: 0.15,
-      description: "SLD 10 SPY @ 560.80"
-    },
-    {
-      id: "act-t5",
-      trade_date: "2026-08-12",
-      settlement_date: "2026-08-14",
-      type: "BUY",
-      symbol: { symbol: "TSLA", description: "Tesla Inc" },
-      units: 15,
-      price: 215.00,
-      amount: -3225.00,
-      fee: 1.00,
-      description: "BOT 15 TSLA @ 215.00"
     }
   ],
   "mock-acc-rh-02": [
@@ -281,19 +314,48 @@ const MOCK_ACTIVITIES: Record<string, any[]> = {
 
 const MOCK_POSITIONS: Record<string, any[]> = {
   "mock-acc-tasty-01": [
+    // /MNQU6 Aug 21 Put Ratio Spread
     {
-      symbol: { symbol: "TSLA", description: "Tesla Inc" },
-      units: 15,
-      price: 222.40,
-      average_purchase_price: 215.00,
-      open_pnl: 111.00
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24500", description: "/MNQU6 Aug 21 24500 Put" },
+      option_symbol: { ticker: "260821P24500", expiration_date: "2026-08-21", strike_price: "24500", option_type: "PUT" },
+      units: -2,
+      price: 5.68,
+      average_purchase_price: 93.00,
+      open_pnl: 365.52
     },
     {
-      symbol: { symbol: "AMD", description: "Advanced Micro Devices" },
-      units: 50,
-      price: 148.50,
-      average_purchase_price: 142.00,
-      open_pnl: 325.00
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24800", description: "/MNQU6 Aug 21 24800 Put" },
+      option_symbol: { ticker: "260821P24800", expiration_date: "2026-08-21", strike_price: "24800", option_type: "PUT" },
+      units: 1,
+      price: 2.89,
+      average_purchase_price: 117.00,
+      open_pnl: -230.71
+    },
+    // /MNQU6 Sep 18 Put Ratio Spread
+    {
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P25800", description: "/MNQU6 Sep 18 25800 Put" },
+      option_symbol: { ticker: "260918P25800", expiration_date: "2026-09-18", strike_price: "25800", option_type: "PUT" },
+      units: -2,
+      price: 14.39,
+      average_purchase_price: 81.00,
+      open_pnl: 53.39
+    },
+    {
+      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P26100", description: "/MNQU6 Sep 18 26100 Put" },
+      option_symbol: { ticker: "260918P26100", expiration_date: "2026-09-18", strike_price: "26100", option_type: "PUT" },
+      units: 1,
+      price: 8.90,
+      average_purchase_price: 96.50,
+      open_pnl: -34.40
+    },
+    // /MESU6 Sep 18 Futures Option
+    {
+      symbol: { symbol: "/MESU6", raw_symbol: "/MESU6 260918P7050", description: "/MESU6 Sep 18 7050 Put" },
+      option_symbol: { ticker: "260918P7050", expiration_date: "2026-09-18", strike_price: "7050", option_type: "PUT" },
+      units: -1,
+      price: 2.25,
+      average_purchase_price: 23.75,
+      open_pnl: 39.75
     }
   ],
   "mock-acc-rh-02": [

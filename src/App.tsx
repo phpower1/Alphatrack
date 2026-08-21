@@ -20,7 +20,12 @@ import {
   ArrowUpRight,
   ArrowDownRight,
   Search,
-  Key
+  Key,
+  ChevronDown,
+  ChevronRight,
+  FolderTree,
+  ListFilter,
+  Check
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -37,7 +42,10 @@ import {
   parseTastyTradeItem, 
   isTradeActivity, 
   formatTradeDateTime, 
-  ParsedOptionDetails 
+  ParsedOptionDetails,
+  groupItemsByTastyStrategy,
+  UnderlyingGroup,
+  StrategyGroup
 } from './utils/tastyParser';
 
 interface SnapTradeAccount {
@@ -118,9 +126,21 @@ export default function App() {
   const [connections, setConnections] = useState<BrokerageConnection[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // View & Grouping states
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'trades' | 'positions'>('trades');
+  const [activeTab, setActiveTab] = useState<'trades' | 'positions'>('positions');
+  const [groupBy, setGroupBy] = useState<'strategy' | 'flat'>('strategy');
+  const [collapsedUnderlyings, setCollapsedUnderlyings] = useState<Record<string, boolean>>({});
+  const [collapsedStrategies, setCollapsedStrategies] = useState<Record<string, boolean>>({});
   const [searchFilter, setSearchFilter] = useState('');
+
+  const toggleUnderlying = (key: string) => {
+    setCollapsedUnderlyings(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  const toggleStrategy = (id: string) => {
+    setCollapsedStrategies(prev => ({ ...prev, [id]: !prev[id] }));
+  };
 
   // Dialog states
   const [portalDialogOpen, setPortalDialogOpen] = useState(false);
@@ -654,6 +674,27 @@ export default function App() {
     return (filteredTrades || [])[0] || (trades || [])[0] || null;
   }, [trades, positions, activeTradeId, filteredTrades]);
 
+  const groupedPositions = useMemo(() => {
+    return groupItemsByTastyStrategy(filteredPositions);
+  }, [filteredPositions]);
+
+  const groupedTrades = useMemo(() => {
+    return groupItemsByTastyStrategy(filteredTrades, calculateROI);
+  }, [filteredTrades]);
+
+  const activeStrategy = useMemo(() => {
+    if (!activeTrade) return null;
+    const allGroups = activeTab === 'positions' ? groupedPositions : groupedTrades;
+    for (const uGroup of allGroups) {
+      for (const strat of uGroup.strategies) {
+        if (strat.id === activeTradeId || strat.items.some((item: any) => item.id === activeTradeId || item.id === activeTrade.id)) {
+          return strat;
+        }
+      }
+    }
+    return null;
+  }, [activeTrade, activeTradeId, activeTab, groupedPositions, groupedTrades]);
+
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
   const handleGoogleLogin = async () => {
@@ -1012,110 +1053,685 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="relative w-64">
-                  <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                  <Input
-                    placeholder="Search symbol, broker..."
-                    value={searchFilter}
-                    onChange={(e) => setSearchFilter(e.target.value)}
-                    className="bg-[#181a22] border-slate-800 text-slate-200 text-xs pl-8 h-9 rounded-lg"
-                  />
+                <div className="flex items-center gap-3">
+                  {/* Tastytrade Style Group By Control */}
+                  <div className="flex items-center bg-[#181a24] p-1 rounded-xl border border-slate-800 text-xs">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 flex items-center gap-1">
+                      <FolderTree className="w-3 h-3 text-indigo-400" />
+                      Group:
+                    </span>
+                    <button
+                      onClick={() => setGroupBy('strategy')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                        groupBy === 'strategy'
+                          ? 'bg-indigo-600 text-white shadow-sm font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Strategies / Chains
+                    </button>
+                    <button
+                      onClick={() => setGroupBy('flat')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                        groupBy === 'flat'
+                          ? 'bg-indigo-600 text-white shadow-sm font-semibold'
+                          : 'text-slate-400 hover:text-slate-200'
+                      }`}
+                    >
+                      Flat List
+                    </button>
+                  </div>
+
+                  <div className="relative w-56">
+                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                    <Input
+                      placeholder="Search symbol, broker..."
+                      value={searchFilter}
+                      onChange={(e) => setSearchFilter(e.target.value)}
+                      className="bg-[#181a22] border-slate-800 text-slate-200 text-xs pl-8 h-9 rounded-lg"
+                    />
+                  </div>
                 </div>
               </div>
 
               {/* Table Body */}
               <div className="flex-1 overflow-auto">
                 {activeTab === 'trades' ? (
-                  <table className="w-full border-collapse text-left">
-                    <thead className="sticky top-0 bg-[#161820] z-10">
-                      <tr>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Type</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Trade P/L</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                      {loading ? (
+                  groupBy === 'strategy' ? (
+                    <table className="w-full border-collapse text-left">
+                      <thead className="sticky top-0 bg-[#161820] z-10 font-sans">
                         <tr>
-                          <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                            <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
-                            Loading SnapTrade history...
-                          </td>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Strategy / Legs</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Qty / Type</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date / Expiry</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Trade P/L</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
                         </tr>
-                      ) : filteredTrades.length === 0 ? (
-                        <tr>
-                          <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                            No trades found matching the current filter.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredTrades.map((trade) => {
-                          const metrics = calculateROI(trade);
-                          const isSelected = activeTradeId === trade.id;
-                          const action = trade.details?.action || trade.type;
-                          return (
-                            <tr
-                              key={trade.id}
-                              onClick={() => setActiveTradeId(trade.id)}
-                              className={`cursor-pointer transition-colors ${
-                                isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
-                              }`}
-                            >
-                              <td className="p-3.5">
-                                <div className="flex flex-col gap-1">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="font-bold text-white tracking-tight font-mono text-[13px]">
-                                      {trade.details?.rootSymbol || trade.symbol}
-                                    </span>
-                                    {trade.details?.futureCycle && (
-                                      <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
-                                        {trade.details.futureCycle}
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                        {loading ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
+                              Loading SnapTrade history...
+                            </td>
+                          </tr>
+                        ) : groupedTrades.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              No trades found matching the current filter.
+                            </td>
+                          </tr>
+                        ) : (
+                          groupedTrades.map((uGroup) => {
+                            const isUCollapsed = collapsedUnderlyings[uGroup.key];
+                            return (
+                              <React.Fragment key={`u-trade-${uGroup.key}`}>
+                                {/* Underlying Root Row */}
+                                <tr
+                                  onClick={() => toggleUnderlying(uGroup.key)}
+                                  className="bg-[#181a24] hover:bg-[#1f2230] cursor-pointer transition-colors border-t-2 border-slate-800"
+                                >
+                                  <td className="p-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-slate-400 hover:text-white transition-colors">
+                                        {isUCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                                       </span>
-                                    )}
+                                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]"></span>
+                                      <span className="font-extrabold text-white text-[14px] font-mono tracking-tight">
+                                        {uGroup.symbol}
+                                      </span>
+                                      {uGroup.futureCycle && (
+                                        <span className="bg-[#242838] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/40">
+                                          {uGroup.futureCycle}
+                                        </span>
+                                      )}
+                                      <span className="text-[10px] text-slate-400 font-sans font-medium ml-1">
+                                        ({uGroup.strategies.length} {uGroup.strategies.length === 1 ? 'strategy' : 'strategies'})
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="p-3 text-slate-400 font-sans text-xs">Chain</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className={`p-3 font-extrabold ${uGroup.totalRealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {uGroup.totalRealizedProfit >= 0 ? '+' : ''}${uGroup.totalRealizedProfit.toFixed(2)}
+                                  </td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                </tr>
+
+                                {/* Strategies & Legs */}
+                                {!isUCollapsed && uGroup.strategies.map((strat) => {
+                                  const isStratCollapsed = collapsedStrategies[strat.id];
+                                  const stratROI = strat.totalRequiredCapital > 0 ? (strat.totalRealizedProfit / strat.totalRequiredCapital) * 100 : 0;
+                                  return (
+                                    <React.Fragment key={`strat-t-${strat.id}`}>
+                                      <tr
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveTradeId(strat.items[0]?.id || strat.id);
+                                        }}
+                                        className="bg-[#14151e] hover:bg-slate-800/60 cursor-pointer transition-colors border-l-4 border-indigo-500/60"
+                                      >
+                                        <td className="p-2.5 pl-8">
+                                          <div className="flex items-center gap-2">
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleStrategy(strat.id);
+                                              }}
+                                              className="text-slate-500 hover:text-slate-300 p-0.5"
+                                            >
+                                              {isStratCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                            </button>
+                                            <span className="w-2 h-2 rounded-full bg-purple-400/80"></span>
+                                            <span className="font-bold text-slate-100 text-[13px] font-sans tracking-wide">
+                                              {strat.strategyName}
+                                            </span>
+                                            {strat.expirationFormatted && (
+                                              <span className="text-[11px] text-slate-400 font-sans">
+                                                · {strat.expirationFormatted}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="p-2.5 font-sans text-slate-400 text-xs">
+                                          {strat.items[0]?.brokerName || 'Tastytrade'}
+                                        </td>
+                                        <td className="p-2.5 text-slate-300 font-semibold font-mono">
+                                          {strat.items.length} legs
+                                        </td>
+                                        <td className="p-2.5 text-slate-400 text-xs font-sans">
+                                          {strat.expirationFormatted || '-'}
+                                        </td>
+                                        <td className={`p-2.5 font-bold font-mono ${strat.totalRealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                          {strat.totalRealizedProfit >= 0 ? '+' : ''}${strat.totalRealizedProfit.toFixed(2)}
+                                        </td>
+                                        <td className="p-2.5 text-slate-300 font-mono">
+                                          {stratROI.toFixed(1)}%
+                                        </td>
+                                        <td className="p-2.5 text-slate-300 font-mono">
+                                          {(stratROI * 0.85).toFixed(1)}%
+                                        </td>
+                                        <td className="p-2.5 text-indigo-300 font-semibold font-mono">
+                                          {(stratROI * 12).toFixed(1)}%
+                                        </td>
+                                      </tr>
+
+                                      {!isStratCollapsed && strat.items.map((trade) => {
+                                        const metrics = calculateROI(trade);
+                                        const isSelected = activeTradeId === trade.id;
+                                        const action = trade.details?.action || trade.type;
+                                        return (
+                                          <tr
+                                            key={`trade-leg-${trade.id}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setActiveTradeId(trade.id);
+                                            }}
+                                            className={`bg-[#0f1016] hover:bg-slate-800/40 cursor-pointer transition-colors border-l-4 border-slate-700/30 ${
+                                              isSelected ? 'bg-indigo-600/15' : ''
+                                            }`}
+                                          >
+                                            <td className="p-2 pl-14">
+                                              <div className="flex items-center gap-2 text-xs">
+                                                <div className="flex items-center gap-1.5 bg-[#181a24] px-2.5 py-1 rounded-md border border-slate-800 text-[11px]">
+                                                  <span className={`font-mono font-bold ${
+                                                    action === 'STO' || action === 'STC' ? 'text-amber-400' : 'text-emerald-400'
+                                                  }`}>
+                                                    {action === 'STO' || action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
+                                                  </span>
+                                                  {trade.details?.expirationFormatted && (
+                                                    <span className="text-slate-300 font-medium">{trade.details.expirationFormatted}</span>
+                                                  )}
+                                                  {trade.details?.strikeFormatted && (
+                                                    <span className="font-mono font-bold text-white ml-1">{trade.details.strikeFormatted}</span>
+                                                  )}
+                                                  {trade.details?.optionTypeShort && (
+                                                    <span className={`px-1 rounded text-[10px] font-bold ${
+                                                      trade.details.optionTypeShort === 'P' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
+                                                    }`}>
+                                                      {trade.details.optionTypeShort}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </td>
+                                            <td className="p-2 text-slate-500 text-xs font-sans">{trade.brokerName}</td>
+                                            <td className="p-2 font-sans text-xs">
+                                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                                action === 'BTO' || action === 'Buy' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
+                                                action === 'STO' || action === 'Sell' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
+                                                'bg-slate-800 text-slate-300 border border-slate-700'
+                                              }`}>
+                                                {action} {trade.quantity}
+                                              </span>
+                                            </td>
+                                            <td className="p-2 text-slate-400 text-xs font-sans">{formatTradeDateTime(trade.date)}</td>
+                                            <td className="p-2">
+                                              <span className={`font-bold font-mono ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
+                                              </span>
+                                            </td>
+                                            <td className="p-2 text-slate-300 font-mono">{metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}</td>
+                                            <td className="p-2 text-slate-300 font-mono">{metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}</td>
+                                            <td className="p-2 text-indigo-300 font-semibold font-mono">{metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}</td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </React.Fragment>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  ) : (
+                    /* Flat Table for Trades */
+                    <table className="w-full border-collapse text-left">
+                      <thead className="sticky top-0 bg-[#161820] z-10">
+                        <tr>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Type</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Trade P/L</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                        {loading ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
+                              Loading SnapTrade history...
+                            </td>
+                          </tr>
+                        ) : filteredTrades.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              No trades found matching the current filter.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredTrades.map((trade) => {
+                            const metrics = calculateROI(trade);
+                            const isSelected = activeTradeId === trade.id;
+                            const action = trade.details?.action || trade.type;
+                            return (
+                              <tr
+                                key={trade.id}
+                                onClick={() => setActiveTradeId(trade.id)}
+                                className={`cursor-pointer transition-colors ${
+                                  isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
+                                }`}
+                              >
+                                <td className="p-3.5">
+                                  <div className="flex flex-col gap-1">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="font-bold text-white tracking-tight font-mono text-[13px]">
+                                        {trade.details?.rootSymbol || trade.symbol}
+                                      </span>
+                                      {trade.details?.futureCycle && (
+                                        <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
+                                          {trade.details.futureCycle}
+                                        </span>
+                                      )}
+                                      {trade.details?.isOption && (
+                                        <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                                          {trade.details.isFuture ? 'Fut Opt' : 'Option'}
+                                        </span>
+                                      )}
+                                    </div>
                                     {trade.details?.isOption && (
-                                      <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
-                                        {trade.details.isFuture ? 'Fut Opt' : 'Option'}
+                                      <div className="flex items-center gap-1.5 text-[11px]">
+                                        <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
+                                          trade.details.action === 'STO' || trade.details.action === 'STC'
+                                            ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                                            : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                        }`}>
+                                          {trade.details.action === 'STO' || trade.details.action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
+                                        </span>
+                                        {trade.details.expirationFormatted && (
+                                          <span className="text-slate-200 font-medium">{trade.details.expirationFormatted}</span>
+                                        )}
+                                        {trade.status === 'Open' ? (
+                                          <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.2 rounded font-mono font-semibold border border-emerald-500/30">
+                                            {trade.details.daysLeftFormatted || `${trade.details.dte}d`}
+                                          </span>
+                                        ) : (
+                                          trade.details.dte !== undefined && (
+                                            <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
+                                              {trade.details.dte}d
+                                            </span>
+                                          )
+                                        )}
+                                        {trade.details.strikeFormatted && (
+                                          <span className="font-mono font-bold text-slate-100">{trade.details.strikeFormatted}</span>
+                                        )}
+                                        {trade.details.optionTypeShort && (
+                                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
+                                            trade.details.optionTypeShort === 'P'
+                                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                          }`}>
+                                            {trade.details.optionTypeShort}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="p-3.5 font-sans">
+                                  <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
+                                    {trade.brokerName}
+                                  </span>
+                                </td>
+                                <td className="p-3.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border ${
+                                      action === 'BTO' || action === 'Buy'
+                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                        : action === 'STO' || action === 'Sell'
+                                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                        : action === 'BTC'
+                                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
+                                        : action === 'STC'
+                                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                        : action === 'EXPIRED'
+                                        ? 'bg-slate-800 text-slate-400 border-slate-700'
+                                        : 'bg-slate-800 text-slate-300 border-slate-700'
+                                    }`}>
+                                      {action} {trade.quantity}
+                                    </span>
+                                    {trade.status === 'Open' && (
+                                      <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
+                                        OPEN
                                       </span>
                                     )}
                                   </div>
-                                  {trade.details?.isOption && (
+                                </td>
+                                <td className="p-3.5 text-slate-400 text-xs font-sans">
+                                  {formatTradeDateTime(trade.date)}
+                                </td>
+                                <td className="p-3.5">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className={`font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
+                                    </span>
+                                    <span className={`text-[9px] font-sans px-1.5 py-0.2 rounded font-semibold ${
+                                      trade.status === 'Open'
+                                        ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
+                                        : 'text-slate-400 bg-slate-800 border border-slate-700/50'
+                                    }`}>
+                                      {trade.status === 'Open' ? 'Open' : 'Realized'}
+                                    </span>
+                                  </div>
+                                </td>
+                                <td className="p-3.5 text-slate-300">
+                                  {metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}
+                                </td>
+                                <td className="p-3.5 text-slate-300">
+                                  {metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}
+                                </td>
+                                <td className="p-3.5 text-indigo-300 font-semibold">
+                                  {metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  )
+                ) : (
+                  groupBy === 'strategy' ? (
+                    /* Grouped Table for Open Positions */
+                    <table className="w-full border-collapse text-left">
+                      <thead className="sticky top-0 bg-[#161820] z-10 font-sans">
+                        <tr>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Strategy / Contract</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Days Left / Expiry</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Open P/L</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                        {loading ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
+                              Loading open positions...
+                            </td>
+                          </tr>
+                        ) : groupedPositions.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              No open positions found.
+                            </td>
+                          </tr>
+                        ) : (
+                          groupedPositions.map((uGroup) => {
+                            const isUCollapsed = collapsedUnderlyings[uGroup.key];
+                            return (
+                              <React.Fragment key={`u-pos-${uGroup.key}`}>
+                                {/* 1. Underlying Header Row (e.g. /MNQU6, /MESU6, TSLA) */}
+                                <tr
+                                  onClick={() => toggleUnderlying(uGroup.key)}
+                                  className="bg-[#181a24] hover:bg-[#1f2230] cursor-pointer transition-colors border-t-2 border-slate-800"
+                                >
+                                  <td className="p-3">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-slate-400 hover:text-white transition-colors">
+                                        {isUCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                                      </span>
+                                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]"></span>
+                                      <span className="font-extrabold text-white text-[14px] font-mono tracking-tight">
+                                        {uGroup.symbol}
+                                      </span>
+                                      {uGroup.futureCycle && (
+                                        <span className="bg-[#242838] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/40">
+                                          {uGroup.futureCycle}
+                                        </span>
+                                      )}
+                                      <span className="text-[10px] text-slate-400 font-sans font-medium ml-1">
+                                        ({uGroup.strategies.length} {uGroup.strategies.length === 1 ? 'strategy' : 'strategies'})
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td className="p-3 text-slate-400 font-sans text-xs">Multi-Leg Chain</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 text-slate-400">-</td>
+                                  <td className="p-3 font-bold text-slate-200">${uGroup.totalValue.toFixed(2)}</td>
+                                  <td className={`p-3 font-extrabold ${uGroup.totalOpenPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {uGroup.totalOpenPnl >= 0 ? '+' : ''}${uGroup.totalOpenPnl.toFixed(2)}
+                                  </td>
+                                </tr>
+
+                                {/* 2. Nested Strategies & Legs */}
+                                {!isUCollapsed && uGroup.strategies.map((strat) => {
+                                  const isStratCollapsed = collapsedStrategies[strat.id];
+                                  const isStratSelected = activeTradeId === strat.id || activeStrategy?.id === strat.id;
+                                  return (
+                                    <React.Fragment key={`strat-p-${strat.id}`}>
+                                      {/* Strategy Sub-Header Row (e.g. Ratio, Futures Option, Vertical) */}
+                                      <tr
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setActiveTradeId(strat.items[0]?.id || strat.id);
+                                        }}
+                                        className={`bg-[#14151e] hover:bg-slate-800/60 cursor-pointer transition-colors border-l-4 border-indigo-500/60 ${
+                                          isStratSelected ? 'bg-indigo-950/30' : ''
+                                        }`}
+                                      >
+                                        <td className="p-2.5 pl-8">
+                                          <div className="flex items-center gap-2">
+                                            <button
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleStrategy(strat.id);
+                                              }}
+                                              className="text-slate-500 hover:text-slate-300 p-0.5"
+                                            >
+                                              {isStratCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                                            </button>
+                                            <span className="w-2 h-2 rounded-full bg-purple-400/80"></span>
+                                            <span className="font-bold text-slate-100 text-[13px] font-sans tracking-wide">
+                                              {strat.strategyName}
+                                            </span>
+                                            {strat.expirationFormatted && (
+                                              <span className="text-[11px] text-slate-400 font-sans">
+                                                · {strat.expirationFormatted}
+                                              </span>
+                                            )}
+                                          </div>
+                                        </td>
+                                        <td className="p-2.5 font-sans text-slate-400 text-xs">
+                                          {strat.items[0]?.brokerName || 'Tastytrade'}
+                                        </td>
+                                        <td className="p-2.5 text-slate-300 font-semibold font-mono">
+                                          {strat.totalQuantity > 0 ? `+${strat.totalQuantity}` : strat.totalQuantity}
+                                        </td>
+                                        <td className="p-2.5">
+                                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                            {strat.daysLeftFormatted || (strat.dte !== undefined ? `${strat.dte}d left` : '-')}
+                                          </span>
+                                        </td>
+                                        <td className="p-2.5 text-slate-400 font-mono">
+                                          ${Math.abs(strat.netCostBasis).toFixed(2)}
+                                        </td>
+                                        <td className="p-2.5 text-slate-300 font-mono font-semibold">
+                                          ${Math.abs(strat.netCurrentPrice).toFixed(2)}
+                                        </td>
+                                        <td className="p-2.5 font-bold text-white font-mono">
+                                          ${strat.totalValue.toFixed(2)}
+                                        </td>
+                                        <td className={`p-2.5 font-bold font-mono ${strat.totalOpenPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                          {strat.totalOpenPnl >= 0 ? '+' : ''}${strat.totalOpenPnl.toFixed(2)}
+                                        </td>
+                                      </tr>
+
+                                      {/* 3. Individual Strategy Legs */}
+                                      {!isStratCollapsed && strat.items.map((pos) => {
+                                        const isLegSelected = activeTradeId === pos.id;
+                                        return (
+                                          <tr
+                                            key={`pos-leg-${pos.id}`}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setActiveTradeId(pos.id);
+                                            }}
+                                            className={`bg-[#0f1016] hover:bg-slate-800/40 cursor-pointer transition-colors border-l-4 border-slate-700/30 ${
+                                              isLegSelected ? 'bg-indigo-600/15' : ''
+                                            }`}
+                                          >
+                                            <td className="p-2 pl-14">
+                                              <div className="flex items-center gap-2 text-xs">
+                                                <div className="flex items-center gap-1.5 bg-[#181a24] px-2.5 py-1 rounded-md border border-slate-800 text-[11px]">
+                                                  <span className={`font-mono font-bold ${
+                                                    pos.quantity < 0 ? 'text-amber-400' : 'text-emerald-400'
+                                                  }`}>
+                                                    {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
+                                                  </span>
+                                                  {pos.details?.expirationFormatted && (
+                                                    <span className="text-slate-300 font-medium">{pos.details.expirationFormatted}</span>
+                                                  )}
+                                                  {pos.details?.daysLeftFormatted && (
+                                                    <span className="text-[10px] text-slate-400 font-mono">
+                                                      {pos.details.daysLeftFormatted}
+                                                    </span>
+                                                  )}
+                                                  {pos.details?.strikeFormatted && (
+                                                    <span className="font-mono font-bold text-white ml-1">
+                                                      {pos.details.strikeFormatted}
+                                                    </span>
+                                                  )}
+                                                  {pos.details?.optionTypeShort && (
+                                                    <span className={`px-1 rounded text-[10px] font-bold ${
+                                                      pos.details.optionTypeShort === 'P'
+                                                        ? 'bg-amber-500/20 text-amber-300'
+                                                        : 'bg-emerald-500/20 text-emerald-300'
+                                                    }`}>
+                                                      {pos.details.optionTypeShort}
+                                                    </span>
+                                                  )}
+                                                </div>
+                                              </div>
+                                            </td>
+                                            <td className="p-2 text-slate-500 text-xs font-sans">{pos.brokerName}</td>
+                                            <td className="p-2 text-slate-300 font-semibold font-mono">
+                                              {pos.quantity > 0 ? `+${pos.quantity}` : pos.quantity}
+                                            </td>
+                                            <td className="p-2 text-slate-400 font-mono text-[11px]">
+                                              {pos.details?.expirationFormatted || '-'}
+                                            </td>
+                                            <td className="p-2 text-slate-400 font-mono">${(pos.averagePrice || 0).toFixed(2)}</td>
+                                            <td className="p-2 text-slate-300 font-mono">${(pos.currentPrice || 0).toFixed(2)}</td>
+                                            <td className="p-2 text-slate-300 font-mono">${(pos.totalValue || 0).toFixed(2)}</td>
+                                            <td className={`p-2 font-mono font-semibold ${
+                                              (pos.openPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                                            }`}>
+                                              {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
+                                            </td>
+                                          </tr>
+                                        );
+                                      })}
+                                    </React.Fragment>
+                                  );
+                                })}
+                              </React.Fragment>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  ) : (
+                    /* Flat Table for Open Positions */
+                    <table className="w-full border-collapse text-left">
+                      <thead className="sticky top-0 bg-[#161820] z-10">
+                        <tr>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Contract</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Days Left / Expiry</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
+                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Open P/L</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
+                        {filteredPositions.length === 0 ? (
+                          <tr>
+                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
+                              No open positions found.
+                            </td>
+                          </tr>
+                        ) : (
+                          filteredPositions.map((pos) => {
+                            const isSelected = activeTradeId === pos.id;
+                            return (
+                              <tr 
+                                key={pos.id} 
+                                onClick={() => setActiveTradeId(pos.id)}
+                                className={`cursor-pointer transition-colors ${
+                                  isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
+                                }`}
+                              >
+                              <td className="p-3.5">
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-center gap-1.5 font-sans">
+                                    <span className="font-bold text-white tracking-tight font-mono text-[13px]">
+                                      {pos.details?.rootSymbol || pos.symbol}
+                                    </span>
+                                    {pos.details?.futureCycle && (
+                                      <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
+                                        {pos.details.futureCycle}
+                                      </span>
+                                    )}
+                                    {pos.details?.isOption && (
+                                      <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                                        {pos.details.isFuture ? 'Fut Opt' : 'Option'}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {pos.details?.isOption && (
                                     <div className="flex items-center gap-1.5 text-[11px]">
                                       <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
-                                        trade.details.action === 'STO' || trade.details.action === 'STC'
+                                        pos.quantity < 0
                                           ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
                                           : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
                                       }`}>
-                                        {trade.details.action === 'STO' || trade.details.action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
+                                        {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
                                       </span>
-                                      {trade.details.expirationFormatted && (
-                                        <span className="text-slate-200 font-medium">{trade.details.expirationFormatted}</span>
+                                      {pos.details.expirationFormatted && (
+                                        <span className="text-slate-200 font-medium">{pos.details.expirationFormatted}</span>
                                       )}
-                                      {trade.status === 'Open' ? (
-                                        <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.2 rounded font-mono font-semibold border border-emerald-500/30">
-                                          {trade.details.daysLeftFormatted || `${trade.details.dte}d`}
-                                        </span>
-                                      ) : (
-                                        trade.details.dte !== undefined && (
-                                          <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
-                                            {trade.details.dte}d
-                                          </span>
-                                        )
+                                      {pos.details.strikeFormatted && (
+                                        <span className="font-mono font-bold text-slate-100">{pos.details.strikeFormatted}</span>
                                       )}
-                                      {trade.details.strikeFormatted && (
-                                        <span className="font-mono font-bold text-slate-100">{trade.details.strikeFormatted}</span>
-                                      )}
-                                      {trade.details.optionTypeShort && (
+                                      {pos.details.optionTypeShort && (
                                         <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                                          trade.details.optionTypeShort === 'P'
+                                          pos.details.optionTypeShort === 'P'
                                             ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                             : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                         }`}>
-                                          {trade.details.optionTypeShort}
+                                          {pos.details.optionTypeShort}
                                         </span>
                                       )}
                                     </div>
@@ -1124,168 +1740,31 @@ export default function App() {
                               </td>
                               <td className="p-3.5 font-sans">
                                 <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
-                                  {trade.brokerName}
+                                  {pos.brokerName}
                                 </span>
                               </td>
+                              <td className="p-3.5 text-slate-300 font-semibold">{pos.quantity > 0 ? `+${pos.quantity}` : pos.quantity}</td>
                               <td className="p-3.5">
-                                <div className="flex items-center gap-1.5">
-                                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border ${
-                                    action === 'BTO' || action === 'Buy'
-                                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                                      : action === 'STO' || action === 'Sell'
-                                      ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                                      : action === 'BTC'
-                                      ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
-                                      : action === 'STC'
-                                      ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                                      : action === 'EXPIRED'
-                                      ? 'bg-slate-800 text-slate-400 border-slate-700'
-                                      : 'bg-slate-800 text-slate-300 border-slate-700'
-                                  }`}>
-                                    {action} {trade.quantity}
-                                  </span>
-                                  {trade.status === 'Open' && (
-                                    <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
-                                      OPEN
-                                    </span>
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                                  {pos.details?.daysLeftFormatted || (pos.details?.dte !== undefined ? `${pos.details.dte}d left` : 'Active')}
+                                  {pos.details?.expirationFormatted && (
+                                    <span className="text-emerald-300/80 font-normal">({pos.details.expirationFormatted})</span>
                                   )}
-                                </div>
+                                </span>
                               </td>
-                              <td className="p-3.5 text-slate-400 text-xs font-sans">
-                                {formatTradeDateTime(trade.date)}
-                              </td>
-                              <td className="p-3.5">
-                                <div className="flex items-center gap-1.5">
-                                  <span className={`font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${(metrics.profit || 0).toFixed(2)}` : '-'}
-                                  </span>
-                                  <span className={`text-[9px] font-sans px-1.5 py-0.2 rounded font-semibold ${
-                                    trade.status === 'Open'
-                                      ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
-                                      : 'text-slate-400 bg-slate-800 border border-slate-700/50'
-                                  }`}>
-                                    {trade.status === 'Open' ? 'Open' : 'Realized'}
-                                  </span>
-                                </div>
-                              </td>
-                              <td className="p-3.5 text-slate-300">
-                                {metrics ? `${(metrics.avgROI || 0).toFixed(1)}%` : '-'}
-                              </td>
-                              <td className="p-3.5 text-slate-300">
-                                {metrics ? `${(metrics.peakROI || 0).toFixed(1)}%` : '-'}
-                              </td>
-                              <td className="p-3.5 text-indigo-300 font-semibold">
-                                {metrics ? `${(metrics.annualizedROI || 0).toFixed(1)}%` : '-'}
+                              <td className="p-3.5 text-slate-400">${(pos.averagePrice || 0).toFixed(2)}</td>
+                              <td className="p-3.5 text-slate-200 font-semibold">${(pos.currentPrice || 0).toFixed(2)}</td>
+                              <td className="p-3.5 font-bold text-white">${(pos.totalValue || 0).toFixed(2)}</td>
+                              <td className={`p-3.5 font-bold ${(pos.openPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
                               </td>
                             </tr>
                           );
                         })
                       )}
-                    </tbody>
-                  </table>
-                ) : (
-                  <table className="w-full border-collapse text-left">
-                    <thead className="sticky top-0 bg-[#161820] z-10">
-                      <tr>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Contract</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Days Left / Expiry</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Open P/L</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                      {filteredPositions.length === 0 ? (
-                        <tr>
-                          <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                            No open positions found.
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredPositions.map((pos) => {
-                          const isSelected = activeTradeId === pos.id || activeTrade?.id === pos.id || (activeTrade?.symbol === pos.symbol && activeTrade?.price === (pos.currentPrice || pos.averagePrice));
-                          return (
-                            <tr 
-                              key={pos.id} 
-                              onClick={() => setActiveTradeId(pos.id)}
-                              className={`cursor-pointer transition-colors ${
-                                isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
-                              }`}
-                            >
-                            <td className="p-3.5">
-                              <div className="flex flex-col gap-1">
-                                <div className="flex items-center gap-1.5 font-sans">
-                                  <span className="font-bold text-white tracking-tight font-mono text-[13px]">
-                                    {pos.details?.rootSymbol || pos.symbol}
-                                  </span>
-                                  {pos.details?.futureCycle && (
-                                    <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
-                                      {pos.details.futureCycle}
-                                    </span>
-                                  )}
-                                  {pos.details?.isOption && (
-                                    <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
-                                      {pos.details.isFuture ? 'Fut Opt' : 'Option'}
-                                    </span>
-                                  )}
-                                </div>
-                                {pos.details?.isOption && (
-                                  <div className="flex items-center gap-1.5 text-[11px]">
-                                    <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
-                                      pos.quantity < 0
-                                        ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                                        : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                                    }`}>
-                                      {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
-                                    </span>
-                                    {pos.details.expirationFormatted && (
-                                      <span className="text-slate-200 font-medium">{pos.details.expirationFormatted}</span>
-                                    )}
-                                    {pos.details.strikeFormatted && (
-                                      <span className="font-mono font-bold text-slate-100">{pos.details.strikeFormatted}</span>
-                                    )}
-                                    {pos.details.optionTypeShort && (
-                                      <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                                        pos.details.optionTypeShort === 'P'
-                                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                      }`}>
-                                        {pos.details.optionTypeShort}
-                                      </span>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            </td>
-                            <td className="p-3.5 font-sans">
-                              <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
-                                {pos.brokerName}
-                              </span>
-                            </td>
-                            <td className="p-3.5 text-slate-300 font-semibold">{pos.quantity > 0 ? `+${pos.quantity}` : pos.quantity}</td>
-                            <td className="p-3.5">
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                                {pos.details?.daysLeftFormatted || (pos.details?.dte !== undefined ? `${pos.details.dte}d left` : 'Active')}
-                                {pos.details?.expirationFormatted && (
-                                  <span className="text-emerald-300/80 font-normal">({pos.details.expirationFormatted})</span>
-                                )}
-                              </span>
-                            </td>
-                            <td className="p-3.5 text-slate-400">${(pos.averagePrice || 0).toFixed(2)}</td>
-                            <td className="p-3.5 text-slate-200 font-semibold">${(pos.currentPrice || 0).toFixed(2)}</td>
-                            <td className="p-3.5 font-bold text-white">${(pos.totalValue || 0).toFixed(2)}</td>
-                            <td className={`p-3.5 font-bold ${(pos.openPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                    </tbody>
-                  </table>
+                      </tbody>
+                    </table>
+                  )
                 )}
               </div>
             </div>
@@ -1295,7 +1774,7 @@ export default function App() {
               <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex-1 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-5">
-                    <span className="text-sm font-bold text-white">Trade ROI Inspector</span>
+                    <span className="text-sm font-bold text-white">Trade & Strategy Inspector</span>
                     <Badge variant="outline" className="border-indigo-500/30 text-indigo-400 bg-indigo-500/10 text-[10px]">
                       SNAPTRADE SYNC
                     </Badge>
@@ -1314,24 +1793,76 @@ export default function App() {
                                 {activeTrade.details.futureCycle}
                               </span>
                             )}
+                            {activeStrategy && (
+                              <span className="bg-purple-500/15 text-purple-300 font-sans text-xs font-bold px-2 py-0.5 rounded border border-purple-500/30">
+                                {activeStrategy.strategyName}
+                              </span>
+                            )}
                           </div>
                           <span className="bg-slate-800 text-slate-300 px-2.5 py-0.5 rounded text-[11px] font-medium border border-slate-700">
                             {activeTrade.brokerName}
                           </span>
                         </div>
                         <div className="text-[11px] text-slate-400 mt-1 font-sans">
-                          {activeTrade.details?.isOption 
-                            ? (activeTrade.details.isFuture ? 'Option on Future Contract' : 'Equity Option Contract')
-                            : (activeTrade.details?.isFuture ? 'Futures Instrument' : 'Equity Asset')}
+                          {activeStrategy 
+                            ? `${activeStrategy.strategyName} (${activeStrategy.items.length} legs · ${activeStrategy.expirationFormatted || ''})`
+                            : activeTrade.details?.isOption 
+                              ? (activeTrade.details.isFuture ? 'Option on Future Contract' : 'Equity Option Contract')
+                              : (activeTrade.details?.isFuture ? 'Futures Instrument' : 'Equity Asset')}
                         </div>
                       </div>
 
-                      {/* Tasty-Style Option Contract Card */}
+                      {/* Multi-Leg Strategy Breakdown Card if strategy has > 1 leg */}
+                      {activeStrategy && activeStrategy.items.length > 1 && (
+                        <div className="bg-[#181a24] border border-purple-500/30 rounded-xl p-3 mb-4 font-sans">
+                          <div className="flex items-center justify-between text-[11px] text-slate-300 mb-2 border-b border-slate-800/80 pb-1.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                              <span className="font-bold text-purple-300">{activeStrategy.strategyName} Multi-Leg Structure</span>
+                            </div>
+                            <span className={`font-mono font-bold ${activeStrategy.totalOpenPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {activeStrategy.totalOpenPnl >= 0 ? '+' : ''}${activeStrategy.totalOpenPnl.toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="space-y-1.5 text-xs font-mono">
+                            {activeStrategy.items.map((item: any) => {
+                              const isThisLeg = item.id === activeTrade.id;
+                              return (
+                                <div 
+                                  key={`strat-item-${item.id}`}
+                                  onClick={() => setActiveTradeId(item.id)}
+                                  className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors ${
+                                    isThisLeg ? 'bg-indigo-600/25 border border-indigo-500/40 text-white' : 'hover:bg-slate-800/60 text-slate-300'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span className={`font-bold ${item.quantity < 0 || item.details?.action === 'STO' ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                      {item.details?.action === 'STO' ? `-${item.quantity}` : (item.quantity > 0 ? `+${item.quantity}` : item.quantity)}
+                                    </span>
+                                    <span>{item.details?.strikeFormatted} {item.details?.optionTypeShort}</span>
+                                    <span className="text-[10px] text-slate-400">{item.details?.expirationFormatted}</span>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-slate-400">${(item.currentPrice || item.price || 0).toFixed(2)}</span>
+                                    {item.openPnl !== undefined && (
+                                      <span className={`font-bold ${item.openPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {item.openPnl >= 0 ? '+' : ''}${item.openPnl.toFixed(2)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Selected Leg Pill Badge Card */}
                       {activeTrade.details?.isOption && (
                         <div className="bg-[#181a22] border border-slate-800/90 rounded-xl p-3 mb-4 font-sans">
                           <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2.5 border-b border-slate-800 pb-2">
                             <div className="flex items-center gap-2">
-                              <span className="font-semibold text-slate-300">Order Chain Leg</span>
+                              <span className="font-semibold text-slate-300">Selected Contract Leg</span>
                               {activeTrade.status === 'Open' ? (
                                 <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
                                   OPEN
@@ -1475,7 +2006,6 @@ export default function App() {
         </main>
       )}
 
-      {/* SnapTrade Connection Portal Modal */}
       <Dialog open={portalDialogOpen} onOpenChange={setPortalDialogOpen}>
         <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-2xl h-[80vh] flex flex-col p-0 overflow-hidden">
           <DialogHeader className="p-4 border-b border-slate-800/80 flex flex-row items-center justify-between shrink-0">
