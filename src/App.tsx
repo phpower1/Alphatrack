@@ -222,7 +222,7 @@ export default function App() {
             const primaryBal = balances[0] || {};
             
             const totalNetLiq = acc.balance?.total?.amount ?? primaryBal.total?.amount ?? primaryBal.amount ?? 0;
-            const cashAmount = primaryBal.cash ?? primaryBal.buying_power ?? primaryBal.option_buying_power ?? acc.balance?.cash?.amount ?? 0;
+            const cashAmount = primaryBal.buying_power ?? primaryBal.option_buying_power ?? primaryBal.cash ?? acc.balance?.cash?.amount ?? 0;
 
             return {
               ...acc,
@@ -1033,7 +1033,7 @@ export default function App() {
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Type</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date</th>
-                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Realized P/L</th>
+                        <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Trade P/L</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
                         <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
@@ -1154,8 +1154,19 @@ export default function App() {
                               <td className="p-3.5 text-slate-400 text-xs font-sans">
                                 {formatTradeDateTime(trade.date)}
                               </td>
-                              <td className={`p-3.5 font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${(metrics.profit || 0).toFixed(2)}` : '-'}
+                              <td className="p-3.5">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${(metrics.profit || 0).toFixed(2)}` : '-'}
+                                  </span>
+                                  <span className={`text-[9px] font-sans px-1.5 py-0.2 rounded font-semibold ${
+                                    trade.status === 'Open'
+                                      ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
+                                      : 'text-slate-400 bg-slate-800 border border-slate-700/50'
+                                  }`}>
+                                    {trade.status === 'Open' ? 'Open' : 'Realized'}
+                                  </span>
+                                </div>
                               </td>
                               <td className="p-3.5 text-slate-300">
                                 {metrics ? `${(metrics.avgROI || 0).toFixed(1)}%` : '-'}
