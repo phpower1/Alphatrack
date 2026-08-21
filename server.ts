@@ -563,31 +563,88 @@ async function startServer() {
 
     try {
       const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
-      const posRes = await snaptrade.accountInformation.getAllAccountPositions({
-        accountId,
-        userId,
-        userSecret,
-      });
+      let rawPositions: any[] = [];
+      let rawData: any = null;
 
-      const posData: any = posRes.data;
-      let positions: any[] = [];
-      if (Array.isArray(posData)) {
-        positions = posData;
-      } else if (posData) {
-        const rawResults = posData.results || posData.positions || posData.data || posData.items || [];
-        positions = Array.isArray(rawResults) ? [...rawResults] : [];
-        if (Array.isArray(posData.options_positions)) {
-          positions.push(...posData.options_positions);
+      // 1. Try getUserHoldings first (has full option positions, real open_pnl and average_purchase_price)
+      try {
+        const holdingsRes = await snaptrade.accountInformation.getUserHoldings({
+          accountId,
+          userId,
+          userSecret,
+        });
+        rawData = holdingsRes.data;
+        const hData: any = holdingsRes.data;
+        if (hData) {
+          if (Array.isArray(hData.positions)) {
+            rawPositions.push(...hData.positions);
+          }
+          if (Array.isArray(hData.option_positions)) {
+            rawPositions.push(...hData.option_positions);
+          }
+          if (Array.isArray(hData.options_positions)) {
+            rawPositions.push(...hData.options_positions);
+          }
         }
-        if (Array.isArray(posData.option_positions)) {
-          positions.push(...posData.option_positions);
+      } catch (hErr: any) {
+        console.warn(`[SnapTrade] getUserHoldings attempt for ${accountId}:`, hErr.message);
+      }
+
+      // 2. Fallback to getAllAccountPositions if holdings returned no positions
+      if (rawPositions.length === 0) {
+        try {
+          const posRes = await snaptrade.accountInformation.getAllAccountPositions({
+            accountId,
+            userId,
+            userSecret,
+          });
+          rawData = rawData || posRes.data;
+          const posData: any = posRes.data;
+          if (Array.isArray(posData)) {
+            rawPositions = posData;
+          } else if (posData) {
+            const rawResults = posData.results || posData.positions || posData.data || posData.items || [];
+            rawPositions = Array.isArray(rawResults) ? [...rawResults] : [];
+            if (Array.isArray(posData.options_positions)) {
+              rawPositions.push(...posData.options_positions);
+            }
+            if (Array.isArray(posData.option_positions)) {
+              rawPositions.push(...posData.option_positions);
+            }
+          }
+        } catch (pErr: any) {
+          console.warn(`[SnapTrade] getAllAccountPositions fallback for ${accountId}:`, pErr.message);
         }
       }
+
+      // 3. Normalize position fields
+      const positions = rawPositions.map((p: any) => {
+        const sym = p.symbol || (p.instrument ? {
+          symbol: p.instrument.symbol,
+          raw_symbol: p.instrument.raw_symbol,
+          description: p.instrument.description
+        } : undefined);
+
+        const units = p.units !== undefined ? p.units : (p.quantity !== undefined ? p.quantity : 0);
+        const price = p.price !== undefined ? p.price : (p.current_price !== undefined ? p.current_price : null);
+        const avgPrice = p.average_purchase_price !== undefined ? p.average_purchase_price : (p.cost_basis !== undefined ? p.cost_basis : price);
+        const openPnl = p.open_pnl !== undefined ? p.open_pnl : (p.unrealized_pnl !== undefined ? p.unrealized_pnl : null);
+
+        return {
+          ...p,
+          symbol: sym,
+          units,
+          price,
+          average_purchase_price: avgPrice,
+          open_pnl: openPnl
+        };
+      });
+
       console.log(`[SnapTrade] Fetched ${positions.length} positions for account ${accountId}`);
       res.json({
         isMock: false,
         positions,
-        raw: posData
+        raw: rawData
       });
     } catch (error: any) {
       console.error(`[SnapTrade] Error fetching positions for ${accountId}:`, error.response?.data || error.message);
