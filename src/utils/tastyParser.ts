@@ -250,12 +250,14 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     act.instrument?.symbol ||
     act.symbol?.raw_symbol ||
     act.raw_symbol ||
-    act.symbol?.symbol ||
+    (typeof act.symbol === 'string' ? act.symbol : act.symbol?.symbol) ||
+    act['underlying-symbol'] ||
+    act.underlying_symbol ||
     ''
   ).trim();
   const optionTicker = (act.option_symbol?.ticker || '').trim();
-  const rawType = (act.option_type || act.type || 'BUY').toUpperCase();
-  const tradeDate = act.trade_date || act.settlement_date || act.date || new Date().toISOString();
+  const rawType = (act.action || act.option_type || act.type || 'BUY').toUpperCase();
+  const tradeDate = act['executed-at'] || act.executed_at || act.trade_date || act.settlement_date || act.date || new Date().toISOString();
 
   // 1. Determine Action & Sign
   let action: ParsedOptionDetails['action'] = 'Buy';

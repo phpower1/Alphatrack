@@ -4,11 +4,14 @@ import path from "path";
 import fs from "fs";
 import cors from "cors";
 import dotenv from "dotenv";
+import axios from "axios";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { Snaptrade, SnaptradeAuth, CommercialApiKeyAuth } from "snaptrade-typescript-sdk";
 
 dotenv.config();
+
+const TASTYTRADE_API_BASE = "https://api.tastytrade.com";
 
 // Firebase Admin & Firestore initialization for persistent credential storage
 let firestoreDb: admin.firestore.Firestore | null = null;
@@ -88,6 +91,129 @@ async function saveUserToFirestore(uid: string, data: { userId: string; userSecr
     console.log(`[Firestore Admin] Persisted SnapTrade credentials for user ${uid}`);
   } catch (err: any) {
     console.warn(`[Firestore Admin] Could not save user ${uid}:`, err.message);
+  }
+}
+
+// Local cache file for Tastytrade direct sessions
+const TASTYTRADE_SESSIONS_FILE = path.join(process.cwd(), ".tastytrade_sessions.json");
+
+interface TastytradeSessionData {
+  sessionToken: string;
+  rememberToken?: string;
+  user?: any;
+  login?: string;
+  updatedAt: string;
+}
+
+function loadTastytradeSessionsCache(): Record<string, TastytradeSessionData> {
+  try {
+    if (fs.existsSync(TASTYTRADE_SESSIONS_FILE)) {
+      return JSON.parse(fs.readFileSync(TASTYTRADE_SESSIONS_FILE, "utf-8"));
+    }
+  } catch (e) {}
+  return {};
+}
+
+function saveTastytradeSessionsCache(cache: Record<string, TastytradeSessionData>) {
+  try {
+    fs.writeFileSync(TASTYTRADE_SESSIONS_FILE, JSON.stringify(cache, null, 2), "utf-8");
+  } catch (e) {}
+}
+
+let tastytradeSessionsCache = loadTastytradeSessionsCache();
+
+async function getTastytradeSession(uid: string): Promise<TastytradeSessionData | null> {
+  if (!uid) return null;
+  let session = tastytradeSessionsCache[uid];
+  if (!session && firestoreDb) {
+    try {
+      const snap = await firestoreDb.collection("tastytrade_sessions").doc(uid).get();
+      if (snap.exists) {
+        session = snap.data() as TastytradeSessionData;
+        tastytradeSessionsCache[uid] = session;
+      }
+    } catch (e: any) {
+      console.warn(`[Firestore Admin] Could not read Tastytrade session for ${uid}:`, e.message);
+    }
+  }
+
+  // Validate session or attempt silent refresh with rememberToken if token expired
+  if (session && session.sessionToken) {
+    try {
+      // Test if session is still alive
+      await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
+        headers: {
+          Authorization: session.sessionToken,
+          Accept: "application/json"
+        },
+        timeout: 4000
+      });
+      return session;
+    } catch (err: any) {
+      // If 401 and rememberToken exists, refresh session
+      if (err.response?.status === 401 && session.rememberToken && session.login) {
+        try {
+          console.log(`[Tastytrade] Session expired for ${uid}. Re-authenticating with rememberToken...`);
+          const refreshRes = await axios.post(`${TASTYTRADE_API_BASE}/sessions`, {
+            login: session.login,
+            remember_token: session.rememberToken,
+            remember_me: true
+          }, {
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json"
+            }
+          });
+
+          const newSessionToken = refreshRes.data?.data?.["session-token"];
+          const newRememberToken = refreshRes.data?.data?.["remember-token"] || session.rememberToken;
+          const user = refreshRes.data?.data?.user || session.user;
+
+          if (newSessionToken) {
+            session = {
+              sessionToken: newSessionToken,
+              rememberToken: newRememberToken,
+              user,
+              login: session.login,
+              updatedAt: new Date().toISOString()
+            };
+            await saveTastytradeSession(uid, session);
+            console.log(`[Tastytrade] Successfully re-authenticated user ${uid}`);
+            return session;
+          }
+        } catch (rErr: any) {
+          console.warn(`[Tastytrade] RememberToken re-auth failed for ${uid}:`, rErr.response?.data || rErr.message);
+        }
+      }
+    }
+  }
+
+  return session || null;
+}
+
+async function saveTastytradeSession(uid: string, data: TastytradeSessionData) {
+  tastytradeSessionsCache[uid] = data;
+  saveTastytradeSessionsCache(tastytradeSessionsCache);
+  if (firestoreDb) {
+    try {
+      await firestoreDb.collection("tastytrade_sessions").doc(uid).set(data, { merge: true });
+      console.log(`[Firestore Admin] Persisted Tastytrade session for ${uid}`);
+    } catch (e: any) {
+      console.warn(`[Firestore Admin] Could not persist Tastytrade session for ${uid}:`, e.message);
+    }
+  }
+}
+
+async function deleteTastytradeSession(uid: string) {
+  delete tastytradeSessionsCache[uid];
+  saveTastytradeSessionsCache(tastytradeSessionsCache);
+  if (firestoreDb) {
+    try {
+      await firestoreDb.collection("tastytrade_sessions").doc(uid).delete();
+      console.log(`[Firestore Admin] Deleted Tastytrade session for ${uid}`);
+    } catch (e: any) {
+      console.warn(`[Firestore Admin] Could not delete Tastytrade session for ${uid}:`, e.message);
+    }
   }
 }
 
@@ -830,6 +956,321 @@ async function startServer() {
       console.error(`[SnapTrade] Error deleting connection ${authorizationId}:`, error.response?.data || error.message);
       res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to disconnect brokerage" });
     }
+  });
+
+  // ==========================================
+  // TASTYTRADE DIRECT OFFICIAL REST API PROXY
+  // ==========================================
+
+  // T1. Tastytrade Login / 2FA verification
+  app.post("/api/tastytrade/login", async (req, res) => {
+    const { login, password, otp, rememberMe, uid } = req.body;
+
+    if (!uid) {
+      return res.status(400).json({ error: "Missing Firebase User UID" });
+    }
+    if (!login && !otp) {
+      return res.status(400).json({ error: "Login username/email and password are required" });
+    }
+
+    try {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "Alphatrack/1.0"
+      };
+
+      if (otp) {
+        headers["X-Tastyworks-OTP"] = String(otp).trim();
+      }
+
+      console.log(`[Tastytrade] Authenticating user ${login || uid}${otp ? ' with 2FA OTP code' : ''}...`);
+
+      const sessionRes = await axios.post(`${TASTYTRADE_API_BASE}/sessions`, {
+        login: login ? login.trim() : undefined,
+        password: password || undefined,
+        remember_me: rememberMe !== false
+      }, {
+        headers,
+        validateStatus: (status) => status < 500
+      });
+
+      if (sessionRes.status === 201) {
+        const sessionToken = sessionRes.data?.data?.["session-token"];
+        const rememberToken = sessionRes.data?.data?.["remember-token"];
+        const user = sessionRes.data?.data?.user;
+
+        if (!sessionToken) {
+          return res.status(500).json({ error: "No session token received from Tastytrade" });
+        }
+
+        await saveTastytradeSession(uid, {
+          sessionToken,
+          rememberToken,
+          user,
+          login: login ? login.trim() : undefined,
+          updatedAt: new Date().toISOString()
+        });
+
+        console.log(`[Tastytrade] Authentication successful for user ${user?.email || login}`);
+        return res.json({
+          success: true,
+          user,
+          sessionTokenMasked: `${sessionToken.slice(0, 6)}...`
+        });
+      }
+
+      // Check if 2FA is required (HTTP 401 with OTP header or error message)
+      const is2FARequired = sessionRes.status === 401 && (
+        sessionRes.headers["x-tastyworks-otp"] === "required" ||
+        sessionRes.data?.error?.code === "two_factor_auth_required" ||
+        JSON.stringify(sessionRes.data).toLowerCase().includes("two-factor") ||
+        JSON.stringify(sessionRes.data).toLowerCase().includes("2fa") ||
+        JSON.stringify(sessionRes.data).toLowerCase().includes("otp")
+      );
+
+      if (is2FARequired) {
+        console.log(`[Tastytrade] 2FA required for user ${login}`);
+        return res.json({
+          requires2FA: true,
+          message: "Please enter the 6-digit Two-Factor Authentication (2FA) code from your Authenticator App or SMS."
+        });
+      }
+
+      // Other authentication error (e.g. invalid password)
+      const errMsg = sessionRes.data?.error?.message || sessionRes.data?.message || "Invalid Tastytrade credentials";
+      console.warn(`[Tastytrade] Login rejected:`, errMsg);
+      return res.status(sessionRes.status || 401).json({ error: errMsg });
+
+    } catch (err: any) {
+      console.error(`[Tastytrade] Login error:`, err.response?.data || err.message);
+      res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || err.message || "Failed to authenticate with Tastytrade" });
+    }
+  });
+
+  // T2. Tastytrade Connection Status
+  app.get("/api/tastytrade/status", async (req, res) => {
+    const uid = (req.query.uid as string) || "";
+    if (!uid) {
+      return res.json({ isConnected: false });
+    }
+
+    const session = await getTastytradeSession(uid);
+    if (!session || !session.sessionToken) {
+      return res.json({ isConnected: false });
+    }
+
+    res.json({
+      isConnected: true,
+      user: session.user,
+      login: session.login,
+      updatedAt: session.updatedAt
+    });
+  });
+
+  // T3. Get User Accounts from Tastytrade
+  app.get("/api/tastytrade/accounts", async (req, res) => {
+    const uid = (req.query.uid as string) || "";
+    const session = await getTastytradeSession(uid);
+
+    if (!session || !session.sessionToken) {
+      return res.status(401).json({ error: "Tastytrade account is not connected. Please log in." });
+    }
+
+    try {
+      const accRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me/accounts`, {
+        headers: {
+          Authorization: session.sessionToken,
+          Accept: "application/json"
+        }
+      });
+
+      const items = accRes.data?.data?.items || [];
+      const formattedAccounts = items.map((item: any) => {
+        const a = item.account || item;
+        return {
+          id: `tasty-${a["account-number"]}`,
+          brokerage_authorization: `tasty-auth-${a["account-number"]}`,
+          number: a["account-number"],
+          name: a.nickname || `Tastytrade ${a["account-type-name"] || "Account"}`,
+          institution_name: "Tastytrade",
+          is_futures_approved: a["is-futures-approved"],
+          account_type: a["account-type-name"],
+          is_closed: a["is-closed"],
+          sync_status: { initial_sync_completed: true }
+        };
+      });
+
+      console.log(`[Tastytrade] Fetched ${formattedAccounts.length} live accounts for user ${uid}`);
+      res.json({
+        success: true,
+        items: formattedAccounts
+      });
+    } catch (err: any) {
+      console.error(`[Tastytrade] Error fetching accounts:`, err.response?.data || err.message);
+      if (err.response?.status === 401) {
+        await deleteTastytradeSession(uid);
+      }
+      res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || "Failed to fetch Tastytrade accounts" });
+    }
+  });
+
+  // T4. Get Live Native Positions (Includes /MES, /MNQ Micro Futures Options)
+  app.get("/api/tastytrade/accounts/:accountNumber/positions", async (req, res) => {
+    const { accountNumber } = req.params;
+    const cleanAccNum = accountNumber.replace(/^tasty-/, "");
+    const uid = (req.query.uid as string) || "";
+    const session = await getTastytradeSession(uid);
+
+    if (!session || !session.sessionToken) {
+      return res.status(401).json({ error: "Tastytrade account not connected" });
+    }
+
+    try {
+      const posRes = await axios.get(`${TASTYTRADE_API_BASE}/accounts/${cleanAccNum}/positions`, {
+        headers: {
+          Authorization: session.sessionToken,
+          Accept: "application/json"
+        }
+      });
+
+      const rawItems = posRes.data?.data?.items || [];
+      console.log(`[Tastytrade] Fetched ${rawItems.length} native positions for account ${cleanAccNum}`);
+
+      // Normalize raw Tastytrade position records
+      const positions = rawItems.map((p: any) => {
+        const symbol = p.symbol || p["symbol"] || "";
+        const underlyingSymbol = p["underlying-symbol"] || "";
+        const instrumentType = p["instrument-type"] || "Option";
+        const quantity = parseFloat(p.quantity || p["quantity"] || "0");
+        const multiplier = parseFloat(p.multiplier || p["multiplier"] || "1");
+        const avgPrice = parseFloat(p["average-open-price"] || p.average_open_price || "0");
+        const closePrice = parseFloat(p["close-price"] || p["mark-price"] || p.mark || "0");
+        const costBasis = parseFloat(p["cost-basis"] || "0");
+        const realizedDayGain = parseFloat(p["realized-day-gain"] || "0");
+        const extrinsicValue = parseFloat(p["extrinsic-value"] || "0");
+
+        // Calculate exact open PnL based on position direction
+        const isShort = quantity < 0 || p["quantity-direction"] === "Short";
+        const pnlPoints = isShort ? (avgPrice - closePrice) : (closePrice - avgPrice);
+        const openPnl = +(pnlPoints * Math.abs(quantity) * multiplier).toFixed(2);
+        const marketValue = +(Math.abs(quantity) * closePrice * multiplier).toFixed(2);
+
+        return {
+          symbol,
+          underlying_symbol: underlyingSymbol,
+          instrument_type: instrumentType,
+          quantity,
+          multiplier,
+          average_purchase_price: avgPrice,
+          price: closePrice,
+          current_price: closePrice,
+          cost_basis: costBasis,
+          total_value: marketValue,
+          extrinsic_value: extrinsicValue,
+          realized_day_gain: realizedDayGain,
+          open_pnl: openPnl,
+          raw: p
+        };
+      });
+
+      res.json({
+        success: true,
+        positions,
+        rawItems
+      });
+    } catch (err: any) {
+      console.error(`[Tastytrade] Error fetching positions for ${cleanAccNum}:`, err.response?.data || err.message);
+      res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || "Failed to fetch live positions from Tastytrade" });
+    }
+  });
+
+  // T5. Get Live Account Balances
+  app.get("/api/tastytrade/accounts/:accountNumber/balances", async (req, res) => {
+    const { accountNumber } = req.params;
+    const cleanAccNum = accountNumber.replace(/^tasty-/, "");
+    const uid = (req.query.uid as string) || "";
+    const session = await getTastytradeSession(uid);
+
+    if (!session || !session.sessionToken) {
+      return res.status(401).json({ error: "Tastytrade account not connected" });
+    }
+
+    try {
+      const balRes = await axios.get(`${TASTYTRADE_API_BASE}/accounts/${cleanAccNum}/balances`, {
+        headers: {
+          Authorization: session.sessionToken,
+          Accept: "application/json"
+        }
+      });
+
+      const b = balRes.data?.data || {};
+      const netLiq = parseFloat(b["net-liquidating-value"] || "0");
+      const cash = parseFloat(b["cash-balance"] || "0");
+      const derivativeBuyingPower = parseFloat(b["derivative-buying-power"] || "0");
+      const equityBuyingPower = parseFloat(b["equity-buying-power"] || "0");
+      const maintenanceReq = parseFloat(b["maintenance-requirement"] || "0");
+
+      res.json({
+        success: true,
+        total: { amount: netLiq, currency: "USD" },
+        cash: { amount: cash, currency: "USD" },
+        derivative_buying_power: derivativeBuyingPower,
+        equity_buying_power: equityBuyingPower,
+        maintenance_requirement: maintenanceReq,
+        raw: b
+      });
+    } catch (err: any) {
+      console.error(`[Tastytrade] Error fetching balances for ${cleanAccNum}:`, err.response?.data || err.message);
+      res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || "Failed to fetch balances from Tastytrade" });
+    }
+  });
+
+  // T6. Get Live Account Transactions / Trades History
+  app.get("/api/tastytrade/accounts/:accountNumber/transactions", async (req, res) => {
+    const { accountNumber } = req.params;
+    const cleanAccNum = accountNumber.replace(/^tasty-/, "");
+    const uid = (req.query.uid as string) || "";
+    const startDate = (req.query.startDate as string) || undefined;
+    const session = await getTastytradeSession(uid);
+
+    if (!session || !session.sessionToken) {
+      return res.status(401).json({ error: "Tastytrade account not connected" });
+    }
+
+    try {
+      let url = `${TASTYTRADE_API_BASE}/accounts/${cleanAccNum}/transactions?per-page=250`;
+      if (startDate) {
+        url += `&start-date=${encodeURIComponent(startDate)}`;
+      }
+
+      const txRes = await axios.get(url, {
+        headers: {
+          Authorization: session.sessionToken,
+          Accept: "application/json"
+        }
+      });
+
+      const items = txRes.data?.data?.items || [];
+      console.log(`[Tastytrade] Fetched ${items.length} transactions for account ${cleanAccNum}`);
+
+      res.json({
+        success: true,
+        data: items
+      });
+    } catch (err: any) {
+      console.error(`[Tastytrade] Error fetching transactions for ${cleanAccNum}:`, err.response?.data || err.message);
+      res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || "Failed to fetch transactions from Tastytrade" });
+    }
+  });
+
+  // T7. Logout Tastytrade Direct Connection
+  app.post("/api/tastytrade/logout", async (req, res) => {
+    const { uid } = req.body;
+    if (uid) {
+      await deleteTastytradeSession(uid);
+    }
+    res.json({ success: true });
   });
 
   // Vite middleware for development

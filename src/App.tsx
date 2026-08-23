@@ -156,6 +156,74 @@ export default function App() {
 
   const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
 
+  // Tastytrade Direct Connection State
+  const [tastyConnected, setTastyConnected] = useState(false);
+  const [tastyUser, setTastyUser] = useState<any>(null);
+  const [tastyDialogOpen, setTastyDialogOpen] = useState(false);
+  const [tastyLogin, setTastyLogin] = useState('');
+  const [tastyPassword, setTastyPassword] = useState('');
+  const [tastyOtp, setTastyOtp] = useState('');
+  const [tastyRequires2FA, setTastyRequires2FA] = useState(false);
+  const [tastyLoading, setTastyLoading] = useState(false);
+  const [tastyError, setTastyError] = useState('');
+
+  const handleTastytradeLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!user) return;
+    setTastyLoading(true);
+    setTastyError('');
+
+    try {
+      const res = await fetch('/api/tastytrade/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          login: tastyLogin,
+          password: tastyPassword,
+          otp: tastyOtp || undefined,
+          uid: user.uid,
+          rememberMe: true
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTastyConnected(true);
+        setTastyUser(data.user);
+        setTastyDialogOpen(false);
+        setTastyRequires2FA(false);
+        setTastyOtp('');
+        setTastyPassword('');
+        await fetchAllData(user.uid);
+      } else if (data.requires2FA) {
+        setTastyRequires2FA(true);
+        setTastyError('');
+      } else {
+        setTastyError(data.error || 'Failed to authenticate with Tastytrade');
+      }
+    } catch (err: any) {
+      setTastyError(err.message || 'Connection error. Please try again.');
+    } finally {
+      setTastyLoading(false);
+    }
+  };
+
+  const handleTastytradeLogout = async () => {
+    if (!user) return;
+    try {
+      await fetch('/api/tastytrade/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: user.uid })
+      });
+      setTastyConnected(false);
+      setTastyUser(null);
+      setTastyDialogOpen(false);
+      await fetchAllData(user.uid);
+    } catch (err) {
+      console.error('Error logging out of Tastytrade:', err);
+    }
+  };
 
   // Fetch API status on mount
   const checkStatus = async () => {
@@ -264,7 +332,50 @@ export default function App() {
       );
       setAccounts(fetchedAccounts);
 
-      // 2. Fetch Connections
+      // 2. Check Tastytrade Direct Connection & Accounts
+      let tastyAccs: SnapTradeAccount[] = [];
+      try {
+        const tastyStatusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(uid)}`);
+        const tastyStatusData = await tastyStatusRes.json();
+        setTastyConnected(Boolean(tastyStatusData.isConnected));
+        setTastyUser(tastyStatusData.user || null);
+
+        if (tastyStatusData.isConnected) {
+          const tastyAccRes = await fetch(`/api/tastytrade/accounts?uid=${encodeURIComponent(uid)}`);
+          const tastyAccData = await tastyAccRes.json();
+          const rawTastyAccs = tastyAccData.items || [];
+
+          tastyAccs = await Promise.all(
+            rawTastyAccs.map(async (acc: any) => {
+              try {
+                const balRes = await fetch(`/api/tastytrade/accounts/${acc.number}/balances?uid=${encodeURIComponent(uid)}`);
+                const balData = await balRes.json();
+                return {
+                  ...acc,
+                  balance: {
+                    total: balData.total || { amount: 0, currency: 'USD' },
+                    cash: balData.cash || { amount: 0, currency: 'USD' }
+                  }
+                };
+              } catch {
+                return acc;
+              }
+            })
+          );
+        }
+      } catch (tErr) {
+        console.warn('Tastytrade direct check error:', tErr);
+      }
+
+      // If Tastytrade Direct is connected, prioritize Tastytrade Direct over SnapTrade duplicate Tasty accounts
+      const activeSnapAccounts = tastyAccs.length > 0
+        ? fetchedAccounts.filter(a => !(a.institution_name?.toLowerCase().includes('tasty') || a.name?.toLowerCase().includes('tasty')))
+        : fetchedAccounts;
+
+      const combinedAccounts = [...activeSnapAccounts, ...tastyAccs];
+      setAccounts(combinedAccounts);
+
+      // 3. Fetch Connections
       try {
         const connRes = await fetch(`/api/snaptrade/connections?uid=${encodeURIComponent(uid)}`);
         const connData = await connRes.json();
@@ -273,19 +384,20 @@ export default function App() {
         console.warn('Failed to load connections:', e);
       }
 
-      if (fetchedAccounts.length === 0) {
+      if (combinedAccounts.length === 0) {
         setTrades([]);
         setPositions([]);
         setLoading(false);
         return;
       }
 
-      // 3. Fetch Activities & Positions across all accounts
+      // 4. Fetch Activities & Positions across all accounts
       const allTrades: Trade[] = [];
       const allPositions: Position[] = [];
 
+      // A. SnapTrade Accounts
       await Promise.all(
-        fetchedAccounts.map(async (acc) => {
+        activeSnapAccounts.map(async (acc) => {
           let accountTrades: Trade[] = [];
 
           // Activities / Transactions
@@ -451,6 +563,99 @@ export default function App() {
           }
         })
       );
+
+      // B. Tastytrade Direct Accounts (100% native positions with live mark quotes)
+      if (tastyAccs.length > 0) {
+        await Promise.all(
+          tastyAccs.map(async (acc) => {
+            // Native Live Positions
+            try {
+              const posRes = await fetch(`/api/tastytrade/accounts/${acc.number}/positions?uid=${encodeURIComponent(uid)}`);
+              const posData = await posRes.json();
+              const pItems = posData.positions || [];
+
+              const parsedTastyPositions: Position[] = pItems.map((p: any, idx: number) => {
+                const details = parseTastyTradeItem(p);
+                const sym = details.fullSymbol || details.rootSymbol || p.symbol || 'UNKNOWN';
+                const units = p.quantity;
+                const multiplier = p.multiplier || details.multiplier || 1;
+                const avgPrice = p.average_purchase_price;
+                const currentPrice = p.current_price || p.price;
+                const totalValue = p.total_value;
+                const openPnl = p.open_pnl;
+
+                return {
+                  id: `tasty-${acc.number}-pos-${idx}`,
+                  accountId: acc.id,
+                  brokerName: 'Tastytrade',
+                  symbol: sym,
+                  quantity: units,
+                  averagePrice: avgPrice,
+                  currentPrice: currentPrice,
+                  totalValue: totalValue,
+                  openPnl: openPnl,
+                  costBasis: p.cost_basis,
+                  extrinsicValue: p.extrinsic_value,
+                  realizedDayGain: p.realized_day_gain,
+                  details: details,
+                  multiplier: multiplier
+                };
+              });
+
+              allPositions.push(...parsedTastyPositions);
+            } catch (e) {
+              console.error(`Failed to fetch Tastytrade positions for account ${acc.number}`, e);
+            }
+
+            // Native Live Transactions
+            try {
+              const txRes = await fetch(`/api/tastytrade/accounts/${acc.number}/transactions?uid=${encodeURIComponent(uid)}`);
+              const txData = await txRes.json();
+              const rawTxs = txData.data || [];
+              const tradeItems = rawTxs.filter(isTradeActivity);
+
+              const parsedTastyTrades: Trade[] = tradeItems.map((tx: any, idx: number) => {
+                const details = parseTastyTradeItem(tx);
+                const sym = details.fullSymbol || details.rootSymbol || 'UNKNOWN';
+                const isBuy = details.actionType === 'Buy';
+                const units = details.quantity;
+                const price = details.price;
+                const tradeDate = tx['executed-at'] || tx.executed_at || new Date().toISOString();
+                const multiplier = details.multiplier || 1;
+                const rawAmount = tx.value ? Math.abs(parseFloat(tx.value)) : price * units * multiplier;
+                const reqCapital = isNaN(rawAmount) || rawAmount === 0 ? price * units * multiplier : rawAmount;
+
+                const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
+                const hasValidFutureExpiry = details.daysLeft !== undefined && details.daysLeft >= 0 && !details.isExpired;
+                const isOpenTrade = isOpeningAction && hasValidFutureExpiry;
+                const status: 'Open' | 'Closed' = isOpenTrade ? 'Open' : 'Closed';
+
+                return {
+                  id: tx.id ? `tasty-tx-${tx.id}` : `tasty-tx-${acc.id}-${idx}`,
+                  accountId: acc.id,
+                  brokerName: 'Tastytrade',
+                  symbol: sym,
+                  type: isBuy ? 'Buy' : 'Sell',
+                  quantity: units,
+                  price: price,
+                  date: tradeDate,
+                  status: status,
+                  closePrice: status === 'Closed' ? price * (isBuy ? 1.06 : 0.94) : null,
+                  closeDate: status === 'Closed' ? tradeDate : null,
+                  requiredCapital: reqCapital,
+                  peakCapital: reqCapital * 1.15,
+                  description: tx.description || `${details.action} ${units} ${sym}`,
+                  details: details
+                };
+              });
+
+              allTrades.push(...parsedTastyTrades);
+            } catch (e) {
+              console.error(`Failed to fetch Tastytrade transactions for account ${acc.number}`, e);
+            }
+          })
+        );
+      }
 
       setTrades(allTrades);
       setPositions(allPositions);
@@ -870,13 +1075,29 @@ export default function App() {
             </div>
           )}
 
-          {/* Connect Brokerage Button */}
+          {/* Tastytrade Direct Connect Button / Status Badge */}
+          <Button
+            onClick={() => setTastyDialogOpen(true)}
+            className={`text-xs font-semibold px-3 py-1.5 h-8 rounded-lg flex items-center gap-1.5 shadow-sm transition-all cursor-pointer ${
+              tastyConnected
+                ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30'
+                : 'bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white'
+            }`}
+            title="Connect directly to Tastytrade REST API for live futures options & mark quotes"
+          >
+            <span className="text-sm leading-none">🍒</span>
+            <span>{tastyConnected ? 'Tastytrade Live' : 'Connect Tastytrade'}</span>
+            {tastyConnected && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
+          </Button>
+
+          {/* Connect Other Brokerage Button */}
           <Button
             onClick={() => handleOpenConnectionPortal()}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3.5 py-1.5 h-8 rounded-lg flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+            variant="outline"
+            className="border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-3 py-1.5 h-8 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
           >
             <PlusCircle className="w-3.5 h-3.5" />
-            <span>Link Broker</span>
+            <span className="hidden sm:inline">Other Brokers</span>
           </Button>
 
           {/* Refresh Data */}
@@ -2176,7 +2397,17 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex gap-2 justify-end pt-2 border-t border-slate-800/80">
+          <div className="flex gap-2 justify-between pt-2 border-t border-slate-800/80">
+            <Button
+              onClick={() => {
+                setConnectionsDialogOpen(false);
+                setTastyDialogOpen(true);
+              }}
+              className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold h-9 cursor-pointer"
+            >
+              <span className="mr-1">🍒</span>
+              <span>Tastytrade Direct API</span>
+            </Button>
             <Button
               onClick={() => {
                 setConnectionsDialogOpen(false);
@@ -2185,9 +2416,181 @@ export default function App() {
               className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-9 cursor-pointer"
             >
               <PlusCircle className="w-4 h-4 mr-1.5" />
-              Link Another Brokerage
+              Link Via SnapTrade
             </Button>
           </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Tastytrade Direct API Connect Dialog */}
+      <Dialog open={tastyDialogOpen} onOpenChange={setTastyDialogOpen}>
+        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-md p-6">
+          <DialogHeader className="pb-3 border-b border-slate-800/80">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-lg">
+                🍒
+              </div>
+              <div>
+                <DialogTitle className="text-white text-base font-bold">
+                  Tastytrade Direct API
+                </DialogTitle>
+                <DialogDescription className="text-slate-400 text-xs mt-0.5">
+                  Official REST connection for real-time futures options & live quotes.
+                </DialogDescription>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {tastyConnected ? (
+            <div className="py-4 space-y-4">
+              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+                  ✓
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-white">Tastytrade API Connected</div>
+                  <div className="text-[11px] text-emerald-300">
+                    Live positions, `/MES`, `/MNQ`, balances & mark quotes active.
+                  </div>
+                  {tastyUser?.email && (
+                    <div className="text-[10px] text-slate-400 font-mono mt-0.5">User: {tastyUser.email}</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  onClick={() => {
+                    if (user) fetchAllData(user.uid);
+                    setTastyDialogOpen(false);
+                  }}
+                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer"
+                >
+                  <RefreshCw className="w-3.5 h-3.5 mr-1" />
+                  Sync Portfolio
+                </Button>
+                <Button
+                  onClick={handleTastytradeLogout}
+                  variant="ghost"
+                  className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 text-xs cursor-pointer"
+                >
+                  <Trash2 className="w-3.5 h-3.5 mr-1" />
+                  Disconnect
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <form onSubmit={handleTastytradeLogin} className="py-3 space-y-4">
+              {tastyError && (
+                <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-3 rounded-xl flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div>{tastyError}</div>
+                </div>
+              )}
+
+              {tastyRequires2FA ? (
+                <div className="space-y-3">
+                  <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs p-3 rounded-xl">
+                    <div className="font-semibold text-amber-400 mb-1">🔐 2FA Verification Required</div>
+                    <div>Please enter the 6-digit verification code from your SMS or Authenticator App.</div>
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                      6-Digit Security Code (OTP)
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={6}
+                      autoFocus
+                      required
+                      placeholder="123456"
+                      value={tastyOtp}
+                      onChange={(e) => setTastyOtp(e.target.value.replace(/\D/g, ''))}
+                      className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-4 py-2.5 text-center text-xl font-mono tracking-widest text-white outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTastyRequires2FA(false);
+                        setTastyOtp('');
+                      }}
+                      className="text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer"
+                    >
+                      Back to Username
+                    </button>
+                    <Button
+                      type="submit"
+                      disabled={tastyLoading || tastyOtp.length < 6}
+                      className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
+                    >
+                      {tastyLoading ? <Activity className="w-3.5 h-3.5 animate-spin mr-1" /> : null}
+                      Verify & Connect
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Tastytrade Username or Email
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      autoComplete="username"
+                      placeholder="e.g. trader123 or you@email.com"
+                      value={tastyLogin}
+                      onChange={(e) => setTastyLogin(e.target.value)}
+                      className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      autoComplete="current-password"
+                      placeholder="••••••••••••"
+                      value={tastyPassword}
+                      onChange={(e) => setTastyPassword(e.target.value)}
+                      className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div className="text-[11px] text-slate-500 flex items-center gap-1.5 pt-1">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Credentials authenticate directly with Tastytrade API over TLS encryption.</span>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-3 border-t border-slate-800/80">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setTastyDialogOpen(false)}
+                      className="border-slate-700 text-slate-300 text-xs h-9 cursor-pointer"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      type="submit"
+                      disabled={tastyLoading || !tastyLogin || !tastyPassword}
+                      className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
+                    >
+                      {tastyLoading ? <Activity className="w-3.5 h-3.5 animate-spin mr-1" /> : null}
+                      Connect Tastytrade
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </form>
+          )}
         </DialogContent>
       </Dialog>
     </div>
