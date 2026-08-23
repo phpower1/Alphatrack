@@ -679,7 +679,7 @@ async function startServer() {
         }
       }
 
-      // 3. Normalize position fields
+      // 3. Normalize position fields with rich broker metrics
       const positions = rawPositions.map((p: any) => {
         const sym = p.symbol || (p.instrument ? {
           symbol: p.instrument.symbol,
@@ -688,9 +688,11 @@ async function startServer() {
         } : undefined);
 
         const units = p.units !== undefined ? p.units : (p.quantity !== undefined ? p.quantity : 0);
-        const price = p.price !== undefined ? p.price : (p.current_price !== undefined ? p.current_price : null);
-        const avgPrice = p.average_purchase_price !== undefined ? p.average_purchase_price : (p.cost_basis !== undefined ? p.cost_basis : price);
-        const openPnl = p.open_pnl !== undefined ? p.open_pnl : (p.unrealized_pnl !== undefined ? p.unrealized_pnl : null);
+        const price = p.price !== undefined ? p.price : (p.current_price !== undefined ? p.current_price : (p.market_price !== undefined ? p.market_price : null));
+        const avgPrice = p.average_purchase_price !== undefined ? p.average_purchase_price : (p.cost_basis !== undefined ? p.cost_basis : (p.average_price !== undefined ? p.average_price : price));
+        const openPnl = p.open_pnl !== undefined ? p.open_pnl : (p.unrealized_pnl !== undefined ? p.unrealized_pnl : (p.pnl !== undefined ? p.pnl : null));
+        const totalValue = p.total_value !== undefined ? p.total_value : (p.market_value !== undefined ? p.market_value : (p.value !== undefined ? p.value : null));
+        const multiplier = p.multiplier || p.contract_multiplier || p.instrument?.multiplier || p.option_symbol?.multiplier || null;
 
         return {
           ...p,
@@ -698,7 +700,9 @@ async function startServer() {
           units,
           price,
           average_purchase_price: avgPrice,
-          open_pnl: openPnl
+          open_pnl: openPnl,
+          total_value: totalValue,
+          multiplier: multiplier
         };
       });
 
@@ -766,7 +770,45 @@ async function startServer() {
     }
   });
 
-  // 10. Delete / Disconnect Brokerage Connection
+  // 10. Force Refresh Brokerage Authorization / Live Data Sync
+  app.post("/api/snaptrade/connections/:authorizationId/refresh", async (req, res) => {
+    const { authorizationId } = req.params;
+    const uid = (req.body.uid as string) || (req.query.uid as string) || "";
+    const snaptrade = getSnapTradeClient();
+
+    if (!snaptrade || !uid || authorizationId.startsWith("mock-")) {
+      return res.json({ success: true, message: "Mock connection refreshed" });
+    }
+
+    try {
+      const { userId, userSecret } = await getOrRegisterUser(snaptrade, uid);
+      console.log(`[SnapTrade] Refreshing brokerage authorization ${authorizationId} for user ${userId}`);
+      
+      const refreshRes = await snaptrade.connections.refreshBrokerageAuthorization({
+        authorizationId,
+        userId,
+        userSecret,
+      });
+
+      // Also trigger transaction / positions background sync
+      try {
+        await snaptrade.connections.syncBrokerageAuthorizationTransactions({
+          authorizationId,
+          userId,
+          userSecret,
+        });
+      } catch (syncErr: any) {
+        console.warn(`[SnapTrade] Optional transaction sync notice:`, syncErr.message);
+      }
+
+      res.json({ success: true, data: refreshRes.data });
+    } catch (error: any) {
+      console.error(`[SnapTrade] Error refreshing connection ${authorizationId}:`, error.response?.data || error.message);
+      res.status(error.response?.status || 500).json(error.response?.data || { error: error.message || "Failed to refresh brokerage connection" });
+    }
+  });
+
+  // 11. Delete / Disconnect Brokerage Connection
   app.delete("/api/snaptrade/connections/:authorizationId", async (req, res) => {
     const { authorizationId } = req.params;
     const uid = (req.query.uid as string) || "";

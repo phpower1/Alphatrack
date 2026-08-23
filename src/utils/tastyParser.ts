@@ -10,6 +10,7 @@ export interface ParsedOptionDetails {
   fullSymbol: string;          // e.g. "/MNQU6", "SNAP"
   isOption: boolean;
   isFuture: boolean;
+  multiplier: number;          // Contract multiplier (e.g. 5 for /MES, 2 for /MNQ, 100 for equity options, 1 for stock)
   expirationDate?: string;     // "2026-09-18"
   expirationFormatted?: string;// "Sep 18" or "Sep 18, 2026"
   dte?: number;                // Days to expiration from trade execution date (e.g. 38)
@@ -44,6 +45,111 @@ const FUT_CYCLE_MONTH_MAP: Record<string, number> = {
   F: 1, G: 2, H: 3, J: 4, K: 5, M: 6,
   N: 7, Q: 8, U: 9, V: 10, X: 11, Z: 12
 };
+
+/**
+ * Standard CME/CBOE/ICE Futures Point Multipliers
+ */
+export const FUTURES_MULTIPLIERS: Record<string, number> = {
+  // Micro Equity Indexes
+  '/MES': 5,
+  '/MNQ': 2,
+  '/MYM': 0.5,
+  '/M2K': 5,
+  // Standard Equity Indexes
+  '/ES': 50,
+  '/NQ': 20,
+  '/YM': 5,
+  '/RTY': 50,
+  // Energy
+  '/MCL': 100,
+  '/CL': 1000,
+  '/QM': 500,
+  '/NG': 10000,
+  '/QG': 2500,
+  '/RB': 42000,
+  '/HO': 42000,
+  // Metals
+  '/MGC': 10,
+  '/GC': 100,
+  '/QO': 50,
+  '/MSI': 1000,
+  '/SI': 5000,
+  '/QI': 2500,
+  '/PL': 50,
+  '/PA': 100,
+  '/HG': 25000,
+  // Agriculture & Livestock
+  '/ZC': 50,
+  '/ZW': 50,
+  '/ZS': 50,
+  '/ZM': 100,
+  '/ZL': 600,
+  '/HE': 400,
+  '/LE': 400,
+  // Interest Rates & Treasuries
+  '/ZB': 1000,
+  '/ZN': 1000,
+  '/ZF': 1000,
+  '/ZT': 2000,
+  '/UB': 1000,
+  '/TN': 1000,
+  '/2YY': 200,
+  '/5YY': 200,
+  '/10Y': 100,
+  '/30Y': 100,
+  // Currencies
+  '/6E': 125000,
+  '/6B': 62500,
+  '/6J': 12500000,
+  '/6A': 100000,
+  '/6C': 100000,
+  '/6M': 500000,
+  '/6N': 100000,
+  '/6S': 125000,
+  '/DX': 1000,
+  '/M6E': 12500,
+  '/M6A': 10000,
+  '/M6B': 6250,
+  // Crypto
+  '/MBT': 0.1,
+  '/MET': 0.1,
+  '/BTC': 5,
+  '/ETH': 50
+};
+
+/**
+ * Returns the contract multiplier for a symbol given its root, option status, and future status
+ */
+export function getContractMultiplier(
+  rootSymbol?: string,
+  isOption?: boolean,
+  isFuture?: boolean,
+  explicitMultiplier?: number
+): number {
+  if (explicitMultiplier && !isNaN(explicitMultiplier) && explicitMultiplier > 0) {
+    return explicitMultiplier;
+  }
+  const cleanRoot = (rootSymbol || '').toUpperCase().trim();
+  const normalizedFut = cleanRoot.startsWith('/') ? cleanRoot : `/${cleanRoot}`;
+
+  if (FUTURES_MULTIPLIERS[normalizedFut]) {
+    return FUTURES_MULTIPLIERS[normalizedFut];
+  }
+  if (FUTURES_MULTIPLIERS[cleanRoot]) {
+    return FUTURES_MULTIPLIERS[cleanRoot];
+  }
+
+  if (isOption) {
+    if (isFuture) {
+      // Fallback for unknown futures root
+      return 1;
+    }
+    // Standard equity / ETF option
+    return 100;
+  }
+
+  return 1;
+}
 
 function getThirdFriday(year: number, month: number): string {
   const firstDay = new Date(Date.UTC(year, month - 1, 1));
@@ -362,12 +468,15 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     ? `${rootSymbol}${futureCycle}`.toUpperCase()
     : rootSymbol.toUpperCase();
 
+  const multiplier = getContractMultiplier(rootSymbol, isOption, isFuture, act.multiplier || act.contract_multiplier);
+
   return {
     rootSymbol: rootSymbol || 'UNKNOWN',
     futureCycle: futureCycle || undefined,
     fullSymbol: fullSymbol || 'UNKNOWN',
     isOption,
     isFuture,
+    multiplier,
     expirationDate,
     expirationFormatted,
     dte: dteInfo.dte,
@@ -585,12 +694,13 @@ export function groupItemsByTastyStrategy<T extends {
       for (const item of expItems) {
         const qty = item.quantity || 1;
         const signedQty = item.details?.signedQuantity ?? (item.details?.action === 'STO' || item.details?.action === 'STC' ? -qty : qty);
+        const itemMult = item.details?.multiplier || 1;
         totalQty += signedQty;
         totalVal += (item.totalValue || 0);
         totalPnl += (item.openPnl || 0);
         totalReqCap += (item.requiredCapital || 0);
-        netCost += (item.averagePrice || item.price || 0) * signedQty;
-        netCurr += (item.currentPrice || item.price || 0) * signedQty;
+        netCost += (item.averagePrice || item.price || 0) * signedQty * itemMult;
+        netCurr += (item.currentPrice || item.price || 0) * signedQty * itemMult;
 
         if (calculateMetrics) {
           const m = calculateMetrics(item);

@@ -44,6 +44,7 @@ import {
   formatTradeDateTime, 
   ParsedOptionDetails,
   groupItemsByTastyStrategy,
+  getContractMultiplier,
   UnderlyingGroup,
   StrategyGroup
 } from './utils/tastyParser';
@@ -57,6 +58,10 @@ interface SnapTradeAccount {
   created_date?: string;
   sync_status?: {
     initial_sync_completed?: boolean;
+  };
+  raw_type?: string;
+  meta?: {
+    type?: string;
   };
   balance?: {
     total?: { amount?: number; currency?: string };
@@ -92,6 +97,7 @@ interface Position {
   currentPrice: number;
   totalValue: number;
   openPnl: number;
+  multiplier?: number;
   details?: ParsedOptionDetails;
 }
 
@@ -343,6 +349,7 @@ export default function App() {
               const sym = details.fullSymbol || details.rootSymbol || p.symbol?.symbol || p.symbol?.raw_symbol || p.instrument?.symbol || 'UNKNOWN';
               const rawUnits = parseFloat(p.units || p.quantity || '0');
               const units = isNaN(rawUnits) ? 0 : rawUnits;
+              const multiplier = details.multiplier || getContractMultiplier(details.rootSymbol, details.isOption, details.isFuture, p.multiplier);
               const rawPrice = parseFloat(p.price || p.current_price || p.market_price || '0');
               const currentPrice = isNaN(rawPrice) ? 0 : rawPrice;
               const rawAvg = parseFloat(p.average_purchase_price || p.cost_basis || p.average_price || (currentPrice || '0'));
@@ -354,9 +361,15 @@ export default function App() {
               } else if (p.unrealized_pnl !== undefined && p.unrealized_pnl !== null && !isNaN(parseFloat(p.unrealized_pnl))) {
                 openPnl = parseFloat(p.unrealized_pnl);
               } else if (currentPrice && avgPrice && units !== 0) {
-                openPnl = (currentPrice - avgPrice) * units;
+                const isShort = units < 0 || details.action === 'STO';
+                const pnlPoints = isShort ? (avgPrice - currentPrice) : (currentPrice - avgPrice);
+                openPnl = +(pnlPoints * Math.abs(units) * multiplier).toFixed(2);
               }
               if (isNaN(openPnl)) openPnl = 0;
+
+              const totalValue = (p.total_value !== undefined && p.total_value !== null && !isNaN(parseFloat(p.total_value)))
+                ? Math.abs(parseFloat(p.total_value))
+                : Math.abs(units * (currentPrice || avgPrice) * multiplier);
 
               return {
                 id: `${acc.id}-pos-${idx}`,
@@ -366,8 +379,9 @@ export default function App() {
                 quantity: units,
                 averagePrice: avgPrice,
                 currentPrice: currentPrice || avgPrice,
-                totalValue: Math.abs(units * (currentPrice || avgPrice)),
+                totalValue: totalValue,
                 openPnl: openPnl,
+                multiplier: multiplier,
                 details: details
               };
             });
@@ -380,6 +394,7 @@ export default function App() {
                 const units = t.details?.signedQuantity ?? (t.type === 'Buy' ? t.quantity : -t.quantity);
                 const entryPrice = t.price || 0;
                 const isShort = units < 0 || t.details?.action === 'STO';
+                const multiplier = t.details?.multiplier || getContractMultiplier(t.details?.rootSymbol, t.details?.isOption, t.details?.isFuture);
 
                 let daysHeld = 1;
                 try {
@@ -400,18 +415,18 @@ export default function App() {
                 if (isShort) {
                   // Short option benefits from theta decay over holding days
                   estimatedCurrentPrice = Math.max(0.01, +(entryPrice * (1 - decayRatio * 0.45)).toFixed(2));
-                  openPnl = +((entryPrice - estimatedCurrentPrice) * Math.abs(units)).toFixed(2);
+                  openPnl = +((entryPrice - estimatedCurrentPrice) * Math.abs(units) * multiplier).toFixed(2);
                 } else if (t.details?.isOption) {
                   // Long option
                   estimatedCurrentPrice = +(entryPrice * (1 + 0.05)).toFixed(2);
-                  openPnl = +((estimatedCurrentPrice - entryPrice) * Math.abs(units)).toFixed(2);
+                  openPnl = +((estimatedCurrentPrice - entryPrice) * Math.abs(units) * multiplier).toFixed(2);
                 } else {
                   // Equity
                   estimatedCurrentPrice = +(entryPrice * 1.02).toFixed(2);
-                  openPnl = +((estimatedCurrentPrice - entryPrice) * units).toFixed(2);
+                  openPnl = +((estimatedCurrentPrice - entryPrice) * units * multiplier).toFixed(2);
                 }
 
-                const totalValue = Math.abs(units * estimatedCurrentPrice);
+                const totalValue = Math.abs(units * estimatedCurrentPrice * multiplier);
 
                 return {
                   id: `${acc.id}-derived-pos-${idx}`,
@@ -423,6 +438,7 @@ export default function App() {
                   currentPrice: estimatedCurrentPrice,
                   totalValue: totalValue,
                   openPnl: openPnl,
+                  multiplier: multiplier,
                   details: t.details
                 };
               });
@@ -451,6 +467,23 @@ export default function App() {
   const handleRefresh = async () => {
     if (!user) return;
     setRefreshing(true);
+    try {
+      // Trigger live sync on all connected brokerages with SnapTrade
+      const currentConns = connections.filter(c => !c.disabled);
+      if (currentConns.length > 0) {
+        await Promise.allSettled(
+          currentConns.map(c =>
+            fetch(`/api/snaptrade/connections/${c.id}/refresh`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uid: user.uid })
+            })
+          )
+        );
+      }
+    } catch (e) {
+      console.warn('Background brokerage refresh triggered:', e);
+    }
     await fetchAllData(user.uid);
     setRefreshing(false);
   };
@@ -586,7 +619,10 @@ export default function App() {
 
     const entryPrice = trade.price || 0;
     const quantity = trade.quantity || 1;
-    const reqCap = (trade.requiredCapital && trade.requiredCapital > 0) ? trade.requiredCapital : (entryPrice * quantity) || 1;
+    const multiplier = trade.details?.multiplier || getContractMultiplier(trade.details?.rootSymbol, trade.details?.isOption, trade.details?.isFuture);
+    const reqCap = (trade.requiredCapital && trade.requiredCapital > 0) 
+      ? trade.requiredCapital 
+      : (entryPrice * quantity * multiplier) || 1;
     const peakCap = (trade.peakCapital && trade.peakCapital > 0) ? trade.peakCapital : reqCap * 1.15;
 
     let profit = 0;
@@ -595,8 +631,8 @@ export default function App() {
     if (trade.status === 'Closed' && trade.closePrice !== null && trade.closePrice !== undefined) {
       const closePrice = trade.closePrice;
       profit = trade.type === 'Buy'
-        ? (closePrice - entryPrice) * quantity
-        : (entryPrice - closePrice) * quantity;
+        ? (closePrice - entryPrice) * quantity * multiplier
+        : (entryPrice - closePrice) * quantity * multiplier;
       try {
         if (trade.closeDate && trade.date) {
           const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
@@ -615,9 +651,10 @@ export default function App() {
       if (matchingPos && matchingPos.openPnl !== undefined && matchingPos.openPnl !== 0) {
         profit = matchingPos.openPnl;
       } else {
-        profit = trade.details?.action === 'STO' 
-          ? entryPrice * 0.05 * quantity 
-          : entryPrice * 0.05 * quantity;
+        const isShort = trade.details?.signedQuantity ? trade.details.signedQuantity < 0 : trade.type === 'Sell';
+        profit = isShort 
+          ? entryPrice * 0.05 * quantity * multiplier
+          : entryPrice * 0.05 * quantity * multiplier;
       }
 
       try {
