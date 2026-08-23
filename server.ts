@@ -1020,20 +1020,25 @@ async function startServer() {
         });
       }
 
-      // Check if 2FA is required (HTTP 401 with OTP header or error message)
+      // Check if 2FA or Device Authentication Challenge is required (HTTP 401)
+      const resStr = JSON.stringify(sessionRes.data || {}).toLowerCase();
+      const otpHeader = String(sessionRes.headers["x-tastyworks-otp"] || sessionRes.headers["X-Tastyworks-OTP"] || "").toLowerCase();
+
       const is2FARequired = sessionRes.status === 401 && (
-        sessionRes.headers["x-tastyworks-otp"] === "required" ||
-        sessionRes.data?.error?.code === "two_factor_auth_required" ||
-        JSON.stringify(sessionRes.data).toLowerCase().includes("two-factor") ||
-        JSON.stringify(sessionRes.data).toLowerCase().includes("2fa") ||
-        JSON.stringify(sessionRes.data).toLowerCase().includes("otp")
+        otpHeader.includes("required") ||
+        resStr.includes("device") ||
+        resStr.includes("challenge") ||
+        resStr.includes("two-factor") ||
+        resStr.includes("2fa") ||
+        resStr.includes("otp") ||
+        resStr.includes("verification")
       );
 
       if (is2FARequired) {
-        console.log(`[Tastytrade] 2FA required for user ${login}`);
+        console.log(`[Tastytrade] 2FA / Device Authentication Challenge triggered for user ${login}`);
         return res.json({
           requires2FA: true,
-          message: "Please enter the 6-digit Two-Factor Authentication (2FA) code from your Authenticator App or SMS."
+          message: "Device verification required. Please enter the 6-digit verification code sent to your phone (SMS) or Authenticator App."
         });
       }
 
