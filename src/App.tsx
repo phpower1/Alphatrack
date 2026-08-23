@@ -187,6 +187,17 @@ export default function App() {
       });
 
       const data = await res.json();
+      const errorMsg = String(data.error || '').toLowerCase();
+      const is2FA = Boolean(
+        data.requires2FA ||
+        errorMsg.includes('challenge') ||
+        errorMsg.includes('device') ||
+        errorMsg.includes('2fa') ||
+        errorMsg.includes('two-factor') ||
+        errorMsg.includes('otp') ||
+        errorMsg.includes('verification')
+      );
+
       if (res.ok && data.success) {
         setTastyConnected(true);
         setTastyUser(data.user);
@@ -195,7 +206,7 @@ export default function App() {
         setTastyOtp('');
         setTastyPassword('');
         await fetchAllData(user.uid);
-      } else if (data.requires2FA) {
+      } else if (is2FA) {
         setTastyRequires2FA(true);
         setTastyError('');
       } else {
@@ -2562,6 +2573,16 @@ export default function App() {
                       onChange={(e) => setTastyPassword(e.target.value)}
                       className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none transition-colors"
                     />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setTastyRequires2FA(true)}
+                      className="text-[11px] text-rose-400 hover:text-rose-300 underline cursor-pointer"
+                    >
+                      Enter 2FA / Device Code directly →
+                    </button>
                   </div>
 
                   <div className="text-[11px] text-slate-500 flex items-center gap-1.5 pt-1">
