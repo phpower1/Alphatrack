@@ -1145,27 +1145,37 @@ async function startServer() {
       // Normalize raw Tastytrade position records
       const positions = rawItems.map((p: any) => {
         const symbol = p.symbol || p["symbol"] || "";
-        const underlyingSymbol = p["underlying-symbol"] || "";
-        const instrumentType = p["instrument-type"] || "Option";
-        const quantity = parseFloat(p.quantity || p["quantity"] || "0");
+        const underlyingSymbol = p["underlying-symbol"] || p.underlying_symbol || "";
+        const instrumentType = p["instrument-type"] || p.instrument_type || "Option";
+        const rawUnits = Math.abs(parseFloat(p.quantity || p["quantity"] || "1"));
+        const isShort = p["quantity-direction"] === "Short" || p.quantity_direction === "Short" || parseFloat(p.quantity || "0") < 0;
+        const quantity = isShort ? -rawUnits : rawUnits;
         const multiplier = parseFloat(p.multiplier || p["multiplier"] || "1");
         const avgPrice = parseFloat(p["average-open-price"] || p.average_open_price || "0");
         const closePrice = parseFloat(p["close-price"] || p["mark-price"] || p.mark || "0");
-        const costBasis = parseFloat(p["cost-basis"] || "0");
-        const realizedDayGain = parseFloat(p["realized-day-gain"] || "0");
-        const extrinsicValue = parseFloat(p["extrinsic-value"] || "0");
+        const costBasis = parseFloat(p["cost-basis"] || p.cost_basis || "0");
+        const realizedDayGain = parseFloat(p["realized-day-gain"] || p.realized_day_gain || "0");
+        const extrinsicValue = parseFloat(p["extrinsic-value"] || p.extrinsic_value || "0");
 
         // Calculate exact open PnL based on position direction
-        const isShort = quantity < 0 || p["quantity-direction"] === "Short";
-        const pnlPoints = isShort ? (avgPrice - closePrice) : (closePrice - avgPrice);
-        const openPnl = +(pnlPoints * Math.abs(quantity) * multiplier).toFixed(2);
-        const marketValue = +(Math.abs(quantity) * closePrice * multiplier).toFixed(2);
+        let openPnl = 0;
+        if (p["unrealized-gain"] !== undefined && p["unrealized-gain"] !== null && !isNaN(parseFloat(p["unrealized-gain"]))) {
+          openPnl = parseFloat(p["unrealized-gain"]);
+        } else if (p.unrealized_gain !== undefined && p.unrealized_gain !== null && !isNaN(parseFloat(p.unrealized_gain))) {
+          openPnl = parseFloat(p.unrealized_gain);
+        } else {
+          const pnlPoints = isShort ? (avgPrice - closePrice) : (closePrice - avgPrice);
+          openPnl = +(pnlPoints * rawUnits * multiplier).toFixed(2);
+        }
+
+        const marketValue = +(rawUnits * closePrice * multiplier).toFixed(2);
 
         return {
           symbol,
           underlying_symbol: underlyingSymbol,
           instrument_type: instrumentType,
           quantity,
+          action: isShort ? "STO" : "BTO",
           multiplier,
           average_purchase_price: avgPrice,
           price: closePrice,

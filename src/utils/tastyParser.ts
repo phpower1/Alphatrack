@@ -303,33 +303,51 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
   let futureCycle = '';
   let isFuture = false;
 
-  // Check for Futures: /MNQU6, /MESU6, /ESU6, ./MNQU6, etc.
-  const futCycleMatch = allText.match(/(?:\.\/|\/|\b)([A-Z]{2,5})([FGHJKMNQUVXZ]\d{1,2})\b/i);
-  if (futCycleMatch) {
-    rootSymbol = `/${futCycleMatch[1].toUpperCase()}`;
-    futureCycle = futCycleMatch[2].toUpperCase();
-    isFuture = true;
-  } else {
-    // Standalone Future root: /MNQ, /ES, /MES
-    const futRootMatch = allText.match(/(?:\.\/|\/)([A-Z]{2,5})\b/i);
-    if (futRootMatch) {
-      rootSymbol = `/${futRootMatch[1].toUpperCase()}`;
+  // Direct check on underlying-symbol property if provided
+  const directUnderlying = (act['underlying-symbol'] || act.underlying_symbol || '').trim();
+  if (directUnderlying) {
+    const futMatch = directUnderlying.match(/(?:\.\/|\/|\b)([A-Z]{2,5})([FGHJKMNQUVXZ]\d{1,2})\b/i);
+    if (futMatch) {
+      rootSymbol = `/${futMatch[1].toUpperCase()}`;
+      futureCycle = futMatch[2].toUpperCase();
+      isFuture = true;
+    } else if (directUnderlying.startsWith('/')) {
+      rootSymbol = directUnderlying.toUpperCase();
       isFuture = true;
     } else {
-      // OCC or Stock root: e.g. "SNAP", "NVDA", "AAPL"
-      const occRootMatch = allText.match(/^([A-Z]{1,6})\s*\d{6}[CP]/i);
-      if (occRootMatch) {
-        rootSymbol = occRootMatch[1].toUpperCase();
-      } else if (act.symbol?.symbol) {
-        rootSymbol = act.symbol.symbol.toUpperCase();
-      } else if (act.option_symbol?.underlying_symbol?.symbol) {
-        rootSymbol = act.option_symbol.underlying_symbol.symbol.toUpperCase();
-      } else if (act.instrument?.underlying?.symbol) {
-        rootSymbol = act.instrument.underlying.symbol.toUpperCase();
+      rootSymbol = directUnderlying.toUpperCase();
+    }
+  }
+
+  if (!rootSymbol || rootSymbol === 'UNKNOWN') {
+    // Check for Futures in allText: /MNQU6, /MESU6, /ESU6, ./MNQU6, etc.
+    const futCycleMatch = allText.match(/(?:\.\/|\/|\b)([A-Z]{2,5})([FGHJKMNQUVXZ]\d{1,2})\b/i);
+    if (futCycleMatch) {
+      rootSymbol = `/${futCycleMatch[1].toUpperCase()}`;
+      futureCycle = futCycleMatch[2].toUpperCase();
+      isFuture = true;
+    } else {
+      // Standalone Future root: /MNQ, /ES, /MES
+      const futRootMatch = allText.match(/(?:\.\/|\/)([A-Z]{2,5})\b/i);
+      if (futRootMatch) {
+        rootSymbol = `/${futRootMatch[1].toUpperCase()}`;
+        isFuture = true;
       } else {
-        // Fallback root from first ticker-like token
-        const wordMatch = allText.match(/\b([A-Z]{2,6})\b/);
-        rootSymbol = wordMatch ? wordMatch[1].toUpperCase() : 'UNKNOWN';
+        // OCC or Stock root: e.g. "SNAP", "NVDA", "AAPL"
+        const occRootMatch = allText.match(/^([A-Z]{1,6})\s*\d{6}[CP]/i);
+        if (occRootMatch) {
+          rootSymbol = occRootMatch[1].toUpperCase();
+        } else if (act.symbol?.symbol) {
+          rootSymbol = act.symbol.symbol.toUpperCase();
+        } else if (act.option_symbol?.underlying_symbol?.symbol) {
+          rootSymbol = act.option_symbol.underlying_symbol.symbol.toUpperCase();
+        } else if (act.instrument?.underlying?.symbol) {
+          rootSymbol = act.instrument.underlying.symbol.toUpperCase();
+        } else {
+          // Fallback root from first ticker-like token
+          const wordMatch = allText.match(/\b([A-Z]{2,6})\b/);
+          rootSymbol = wordMatch ? wordMatch[1].toUpperCase() : 'UNKNOWN';
+        }
       }
     }
   }
