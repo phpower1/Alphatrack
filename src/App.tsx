@@ -182,6 +182,7 @@ export default function App() {
   const [portalLoading, setPortalLoading] = useState(false);
   const [portalError, setPortalError] = useState('');
 
+  const [inspectorMode, setInspectorMode] = useState<'strategy' | 'leg'>('strategy');
   const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
 
   // Tastytrade Direct Connection State
@@ -1052,6 +1053,68 @@ export default function App() {
   }, [activeTrade, activeTradeId, activeTab, groupedPositions, groupedTrades]);
 
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
+
+  // Whole Strategy Metrics Aggregator
+  const strategyMetrics = useMemo(() => {
+    if (!activeStrategy) return null;
+    let totalReqCap = 0;
+    let totalPeakCap = 0;
+    let totalNetProfit = 0;
+    let maxDaysHeld = 1;
+    let hasOpenLeg = false;
+    let totalMarketVal = 0;
+
+    for (const item of activeStrategy.items as any[]) {
+      const isPosItem = 'openPnl' in item;
+      const isTradeItem = 'status' in item;
+
+      if (isPosItem) {
+        hasOpenLeg = true;
+        totalNetProfit += (item.openPnl || 0);
+        totalMarketVal += (item.totalValue || 0);
+        const itemPrice = item.averagePrice || item.currentPrice || 0;
+        const qty = Math.abs(item.quantity || 1);
+        const mult = item.details?.multiplier || 1;
+        const req = (item.totalValue && item.totalValue > 0) ? item.totalValue : (itemPrice * qty * mult);
+        totalReqCap += req;
+        totalPeakCap += req * 1.15;
+      } else if (isTradeItem) {
+        if (item.status === 'Open') hasOpenLeg = true;
+        const legRoi = calculateROI(item as Trade);
+        if (legRoi) {
+          totalNetProfit += legRoi.profit;
+          maxDaysHeld = Math.max(maxDaysHeld, legRoi.daysHeld);
+        }
+        totalReqCap += item.requiredCapital || 0;
+        totalPeakCap += item.peakCapital || ((item.requiredCapital || 0) * 1.15);
+        totalMarketVal += item.requiredCapital || 0;
+      }
+    }
+
+    if (totalReqCap <= 0) totalReqCap = Math.abs(activeStrategy.netCostBasis) || 1;
+    if (totalPeakCap <= 0) totalPeakCap = totalReqCap * 1.15;
+
+    const avgROI = totalReqCap > 0 ? (totalNetProfit / totalReqCap) * 100 : 0;
+    const peakROI = totalPeakCap > 0 ? (totalNetProfit / totalPeakCap) * 100 : 0;
+    const annualizedROI = avgROI * (365 / Math.max(1, maxDaysHeld));
+
+    return {
+      strategyName: activeStrategy.strategyName,
+      strategyType: activeStrategy.strategyType,
+      legsCount: activeStrategy.items.length,
+      isOpen: hasOpenLeg,
+      totalRequiredCapital: totalReqCap,
+      totalPeakCapital: totalPeakCap,
+      netProfit: totalNetProfit,
+      avgROI: isNaN(avgROI) ? 0 : avgROI,
+      peakROI: isNaN(peakROI) ? 0 : peakROI,
+      annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI,
+      daysHeld: maxDaysHeld,
+      totalValue: totalMarketVal,
+      netCostBasis: activeStrategy.netCostBasis,
+      netCurrentPrice: activeStrategy.netCurrentPrice
+    };
+  }, [activeStrategy, calculateROI]);
 
   const handleGoogleLogin = async () => {
     setAuthError(null);
@@ -2177,12 +2240,40 @@ export default function App() {
                         </div>
                         <div className="text-[11px] text-slate-400 mt-1 font-sans">
                           {activeStrategy 
-                            ? `${activeStrategy.strategyName} (${activeStrategy.items.length} legs · ${activeStrategy.expirationFormatted || ''})`
+                            ? `${activeStrategy.strategyName} (${activeStrategy.items.length} ${activeStrategy.items.length === 1 ? 'leg' : 'legs'} · ${activeStrategy.expirationFormatted || 'Active'})`
                             : activeTrade.details?.isOption 
                               ? (activeTrade.details.isFuture ? 'Option on Future Contract' : 'Equity Option Contract')
                               : (activeTrade.details?.isFuture ? 'Futures Instrument' : 'Equity Asset')}
                         </div>
                       </div>
+
+                      {/* View Switcher if Multi-Leg Strategy */}
+                      {activeStrategy && activeStrategy.items.length > 1 && (
+                        <div className="flex items-center bg-[#0e0f14] p-1 rounded-xl border border-slate-800/80 mb-4 text-xs font-sans">
+                          <button
+                            onClick={() => setInspectorMode('strategy')}
+                            className={`flex-1 py-1.5 px-2.5 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5 ${
+                              inspectorMode === 'strategy'
+                                ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40 shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            <Layers className="w-3.5 h-3.5 text-purple-400" />
+                            <span>Whole Strategy ({activeStrategy.items.length} legs)</span>
+                          </button>
+                          <button
+                            onClick={() => setInspectorMode('leg')}
+                            className={`flex-1 py-1.5 px-2.5 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5 ${
+                              inspectorMode === 'leg'
+                                ? 'bg-indigo-600/25 text-indigo-200 border border-indigo-500/40 shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                          >
+                            <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>Selected Leg</span>
+                          </button>
+                        </div>
+                      )}
 
                       {/* Multi-Leg Strategy Breakdown Card if strategy has > 1 leg */}
                       {activeStrategy && activeStrategy.items.length > 1 && (
@@ -2192,33 +2283,45 @@ export default function App() {
                               <span className="w-2 h-2 rounded-full bg-purple-400"></span>
                               <span className="font-bold text-purple-300">{activeStrategy.strategyName} Multi-Leg Structure</span>
                             </div>
-                            <span className={`font-mono font-bold ${activeStrategy.totalOpenPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {activeStrategy.totalOpenPnl >= 0 ? '+' : ''}${activeStrategy.totalOpenPnl.toFixed(2)}
+                            <span className={`font-mono font-bold ${(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                              {(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl) >= 0 ? '+' : ''}${(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl).toFixed(2)}
                             </span>
                           </div>
                           <div className="space-y-1.5 text-xs font-mono">
                             {activeStrategy.items.map((item: any) => {
                               const isThisLeg = item.id === activeTrade.id;
+                              const legAction = item.details?.action;
+                              const legQty = item.quantity;
+                              const signedQtyDisplay = legAction === 'STO' || legAction === 'STC'
+                                ? `-${Math.abs(legQty)}`
+                                : `+${Math.abs(legQty)}`;
+                              const itemPnl = item.openPnl !== undefined ? item.openPnl : (calculateROI(item)?.profit);
+
                               return (
                                 <div 
                                   key={`strat-item-${item.id}`}
-                                  onClick={() => setActiveTradeId(item.id)}
+                                  onClick={() => {
+                                    setActiveTradeId(item.id);
+                                    if (inspectorMode === 'strategy') {
+                                      // Keep strategy or allow quick leg peek
+                                    }
+                                  }}
                                   className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors ${
                                     isThisLeg ? 'bg-indigo-600/25 border border-indigo-500/40 text-white' : 'hover:bg-slate-800/60 text-slate-300'
                                   }`}
                                 >
                                   <div className="flex items-center gap-2">
-                                    <span className={`font-bold ${item.quantity < 0 || item.details?.action === 'STO' ? 'text-amber-400' : 'text-emerald-400'}`}>
-                                      {item.details?.action === 'STO' ? `-${item.quantity}` : (item.quantity > 0 ? `+${item.quantity}` : item.quantity)}
+                                    <span className={`font-bold ${legAction === 'STO' || legAction === 'STC' || legQty < 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                      {signedQtyDisplay}
                                     </span>
                                     <span>{item.details?.strikeFormatted} {item.details?.optionTypeShort}</span>
                                     <span className="text-[10px] text-slate-400">{item.details?.expirationFormatted}</span>
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <span className="text-slate-400">${(item.currentPrice || item.price || 0).toFixed(2)}</span>
-                                    {item.openPnl !== undefined && (
-                                      <span className={`font-bold ${item.openPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        {item.openPnl >= 0 ? '+' : ''}${item.openPnl.toFixed(2)}
+                                    {itemPnl !== undefined && (
+                                      <span className={`font-bold ${itemPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {itemPnl >= 0 ? '+' : ''}${itemPnl.toFixed(2)}
                                       </span>
                                     )}
                                   </div>
@@ -2229,8 +2332,8 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* Selected Leg Pill Badge Card */}
-                      {activeTrade.details?.isOption && (
+                      {/* Selected Leg Pill Badge Card (When in Leg View or Single Leg Strategy) */}
+                      {(inspectorMode === 'leg' || !activeStrategy || activeStrategy.items.length <= 1) && activeTrade.details?.isOption && (
                         <div className="bg-[#181a22] border border-slate-800/90 rounded-xl p-3 mb-4 font-sans">
                           <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2.5 border-b border-slate-800 pb-2">
                             <div className="flex items-center gap-2">
@@ -2293,6 +2396,8 @@ export default function App() {
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${
                               activeTrade.details.action === 'BTO' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' :
                               activeTrade.details.action === 'STO' ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
+                              activeTrade.details.action === 'BTC' ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30' :
+                              activeTrade.details.action === 'STC' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' :
                               'bg-slate-800 text-slate-300 border border-slate-700'
                             }`}>
                               {activeTrade.details.action}
@@ -2301,68 +2406,137 @@ export default function App() {
                         </div>
                       )}
 
+                      {/* ROI Statistics Hero Cards */}
                       <div className="grid grid-cols-2 gap-3">
                         <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
-                          <div className={`text-xl font-bold font-mono mb-1 ${(activeMetrics.avgROI || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {(activeMetrics.avgROI || 0) >= 0 ? '+' : ''}{(activeMetrics.avgROI || 0).toFixed(1)}%
+                          <div className={`text-xl font-bold font-mono mb-1 ${
+                            (inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.avgROI : (activeMetrics.avgROI || 0)) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                          }`}>
+                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.avgROI : (activeMetrics.avgROI || 0)) >= 0 ? '+' : ''}
+                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.avgROI : (activeMetrics.avgROI || 0)).toFixed(1)}%
                           </div>
-                          <div className="text-[10px] uppercase font-medium text-slate-400">Avg Capital ROI</div>
+                          <div className="text-[10px] uppercase font-medium text-slate-400 flex items-center justify-center gap-1">
+                            {inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                            )}
+                            <span>{inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 ? 'Strategy Avg ROI' : 'Avg Capital ROI'}</span>
+                          </div>
                         </div>
 
                         <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
-                          <div className={`text-xl font-bold font-mono mb-1 ${(activeMetrics.peakROI || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            {(activeMetrics.peakROI || 0) >= 0 ? '+' : ''}{(activeMetrics.peakROI || 0).toFixed(1)}%
+                          <div className={`text-xl font-bold font-mono mb-1 ${
+                            (inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.peakROI : (activeMetrics.peakROI || 0)) >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                          }`}>
+                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.peakROI : (activeMetrics.peakROI || 0)) >= 0 ? '+' : ''}
+                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.peakROI : (activeMetrics.peakROI || 0)).toFixed(1)}%
                           </div>
-                          <div className="text-[10px] uppercase font-medium text-slate-400">Peak Capital ROI</div>
+                          <div className="text-[10px] uppercase font-medium text-slate-400 flex items-center justify-center gap-1">
+                            {inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 && (
+                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                            )}
+                            <span>{inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 ? 'Strategy Peak ROI' : 'Peak Capital ROI'}</span>
+                          </div>
                         </div>
                       </div>
 
+                      {/* Detailed Statistics Table */}
                       <div className="mt-6 space-y-3 font-mono text-xs border-t border-slate-800/80 pt-4">
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Status:</span>
-                          <span className={activeTrade.status === 'Open' ? 'text-emerald-400 font-bold' : 'text-slate-300 font-semibold'}>
-                            {activeTrade.status === 'Open' ? 'Open Active Position' : 'Closed Trade'}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Execution Date:</span>
-                          <span className="text-slate-200">{formatTradeDateTime(activeTrade.date)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
-                          <span className="text-slate-200">${(activeTrade.price || 0).toFixed(2)} × {activeTrade.quantity || 1}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Required Capital:</span>
-                          <span className="text-slate-200">${(activeTrade.requiredCapital || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
-                          <span className="text-slate-200">${(activeTrade.peakCapital || 0).toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Realized Gain/Loss:'}</span>
-                          <span className={(activeMetrics.profit || 0) >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                            {(activeMetrics.profit || 0) >= 0 ? '+' : ''}${(activeMetrics.profit || 0).toFixed(2)}
-                          </span>
-                        </div>
-                        <div className="flex justify-between border-t border-slate-800/60 pt-2">
-                          <span className="text-slate-400 font-sans">Holding Period:</span>
-                          <span className="text-slate-200">{activeMetrics.daysHeld || 1} days</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-slate-400 font-sans">Annualized ROI:</span>
-                          <span className="text-indigo-400 font-bold">{(activeMetrics.annualizedROI || 0).toFixed(1)}%</span>
-                        </div>
+                        {inspectorMode === 'strategy' && strategyMetrics && activeStrategy && activeStrategy.items.length > 1 ? (
+                          <>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Strategy Status:</span>
+                              <span className={strategyMetrics.isOpen ? 'text-emerald-400 font-bold' : 'text-slate-300 font-semibold'}>
+                                {strategyMetrics.isOpen ? `Open Active Position (${strategyMetrics.legsCount} legs)` : `Closed Strategy (${strategyMetrics.legsCount} legs)`}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Strategy Expiration:</span>
+                              <span className="text-slate-200">{activeStrategy.expirationFormatted || '-'}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Net Entry / Cost Basis:</span>
+                              <span className="text-slate-200">${Math.abs(strategyMetrics.netCostBasis).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Net Market Price:</span>
+                              <span className="text-slate-200">${Math.abs(strategyMetrics.netCurrentPrice).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Total Required Capital:</span>
+                              <span className="text-slate-200">${strategyMetrics.totalRequiredCapital.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
+                              <span className="text-slate-200">${strategyMetrics.totalPeakCapital.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">{strategyMetrics.isOpen ? 'Strategy Unrealized P/L:' : 'Strategy Realized P/L:'}</span>
+                              <span className={strategyMetrics.netProfit >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                                {strategyMetrics.netProfit >= 0 ? '+' : ''}${strategyMetrics.netProfit.toFixed(2)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between border-t border-slate-800/60 pt-2">
+                              <span className="text-slate-400 font-sans">Holding Period:</span>
+                              <span className="text-slate-200">{strategyMetrics.daysHeld} days</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Strategy Annualized ROI:</span>
+                              <span className="text-indigo-400 font-bold">{strategyMetrics.annualizedROI.toFixed(1)}%</span>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Status:</span>
+                              <span className={activeTrade.status === 'Open' ? 'text-emerald-400 font-bold' : 'text-slate-300 font-semibold'}>
+                                {activeTrade.status === 'Open' ? 'Open Active Position' : 'Closed Trade'}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Execution Date:</span>
+                              <span className="text-slate-200">{formatTradeDateTime(activeTrade.date)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
+                              <span className="text-slate-200">${(activeTrade.price || 0).toFixed(2)} × {activeTrade.quantity || 1}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Required Capital:</span>
+                              <span className="text-slate-200">${(activeTrade.requiredCapital || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
+                              <span className="text-slate-200">${(activeTrade.peakCapital || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Realized Gain/Loss:'}</span>
+                              <span className={(activeMetrics.profit || 0) >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                                {(activeMetrics.profit || 0) >= 0 ? '+' : ''}${(activeMetrics.profit || 0).toFixed(2)}
+                              </span>
+                            </div>
+                            <div className="flex justify-between border-t border-slate-800/60 pt-2">
+                              <span className="text-slate-400 font-sans">Holding Period:</span>
+                              <span className="text-slate-200">{activeMetrics.daysHeld || 1} days</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-slate-400 font-sans">Annualized ROI:</span>
+                              <span className="text-indigo-400 font-bold">{(activeMetrics.annualizedROI || 0).toFixed(1)}%</span>
+                            </div>
+                          </>
+                        )}
                       </div>
 
-                      <div className="mt-6 p-4 bg-indigo-500/5 rounded-xl border border-indigo-500/20 text-xs">
+                      <div className="mt-6 p-4 bg-indigo-500/5 rounded-xl border border-indigo-500/20 text-xs font-sans">
                         <div className="text-indigo-400 font-bold uppercase text-[10px] tracking-wider mb-1 flex items-center gap-1.5">
                           <ShieldCheck className="w-3.5 h-3.5" />
                           <span>Capital Efficiency Insight</span>
                         </div>
                         <p className="text-slate-400 text-[11px] leading-relaxed">
-                          Allocated ${(activeTrade.requiredCapital || 0).toLocaleString()} at open. Peak exposure reached ${(activeTrade.peakCapital || 0).toLocaleString()}, delivering an annualized yield of {(activeMetrics.annualizedROI || 0).toFixed(1)}%.
+                          {inspectorMode === 'strategy' && strategyMetrics && activeStrategy && activeStrategy.items.length > 1 ? (
+                            `Allocated $${strategyMetrics.totalRequiredCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} across ${strategyMetrics.legsCount} legs in ${activeStrategy.strategyName} structure. Peak exposure reached $${strategyMetrics.totalPeakCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, delivering an annualized yield of ${strategyMetrics.annualizedROI.toFixed(1)}%.`
+                          ) : (
+                            `Allocated $${(activeTrade.requiredCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at open. Peak exposure reached $${(activeTrade.peakCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, delivering an annualized yield of ${(activeMetrics.annualizedROI || 0).toFixed(1)}%.`
+                          )}
                         </p>
                       </div>
                     </>

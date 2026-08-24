@@ -255,33 +255,77 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     act.underlying_symbol ||
     ''
   ).trim();
-  const optionTicker = (act.option_symbol?.ticker || '').trim();
-  const rawType = (act.action || act.option_type || act.type || 'BUY').toUpperCase();
+  const rawSubtype = (
+    act['transaction-sub-type'] ||
+    act.transaction_sub_type ||
+    act['transaction-type'] ||
+    act.transaction_type ||
+    act.action ||
+    act['action-type'] ||
+    act.action_type ||
+    act.type ||
+    ''
+  ).toString().toUpperCase().replace(/[\s_-]+/g, '_');
+
+  const descUpper = description.toUpperCase().replace(/[\s_-]+/g, '_');
   const tradeDate = act['executed-at'] || act.executed_at || act.trade_date || act.settlement_date || act.date || new Date().toISOString();
 
   // 1. Determine Action & Sign
   let action: ParsedOptionDetails['action'] = 'Buy';
   let actionType: 'Buy' | 'Sell' = 'Buy';
 
-  if (rawType.includes('BUY_TO_OPEN') || rawType === 'BTO') {
-    action = 'BTO';
-    actionType = 'Buy';
-  } else if (rawType.includes('SELL_TO_OPEN') || rawType === 'STO') {
-    action = 'STO';
-    actionType = 'Sell';
-  } else if (rawType.includes('BUY_TO_CLOSE') || rawType === 'BTC') {
+  if (
+    rawSubtype.includes('BUY_TO_CLOSE') ||
+    rawSubtype === 'BTC' ||
+    descUpper.includes('BUY_TO_CLOSE') ||
+    descUpper.includes('BOUGHT_TO_CLOSE') ||
+    descUpper.includes('BTC') ||
+    (descUpper.startsWith('BOUGHT_') && descUpper.includes('_CLOSE'))
+  ) {
     action = 'BTC';
     actionType = 'Buy';
-  } else if (rawType.includes('SELL_TO_CLOSE') || rawType === 'STC') {
+  } else if (
+    rawSubtype.includes('SELL_TO_CLOSE') ||
+    rawSubtype === 'STC' ||
+    descUpper.includes('SELL_TO_CLOSE') ||
+    descUpper.includes('SOLD_TO_CLOSE') ||
+    descUpper.includes('STC') ||
+    (descUpper.startsWith('SOLD_') && descUpper.includes('_CLOSE'))
+  ) {
     action = 'STC';
     actionType = 'Sell';
-  } else if (rawType.includes('OPTIONEXPIRATION') || description.toUpperCase().includes('EXPIRED')) {
+  } else if (
+    rawSubtype.includes('SELL_TO_OPEN') ||
+    rawSubtype === 'STO' ||
+    descUpper.includes('SELL_TO_OPEN') ||
+    descUpper.includes('SOLD_TO_OPEN') ||
+    descUpper.includes('STO') ||
+    descUpper.startsWith('SOLD_') ||
+    rawSubtype === 'SLD' ||
+    rawSubtype === 'SELL'
+  ) {
+    action = 'STO';
+    actionType = 'Sell';
+  } else if (
+    rawSubtype.includes('BUY_TO_OPEN') ||
+    rawSubtype === 'BTO' ||
+    descUpper.includes('BUY_TO_OPEN') ||
+    descUpper.includes('BOUGHT_TO_OPEN') ||
+    descUpper.includes('BTO') ||
+    descUpper.startsWith('BOUGHT_') ||
+    descUpper.startsWith('BOT_') ||
+    rawSubtype === 'BUY' ||
+    rawSubtype === 'BOT'
+  ) {
+    action = 'BTO';
+    actionType = 'Buy';
+  } else if (rawSubtype.includes('OPTIONEXPIRATION') || rawSubtype.includes('EXPIRATION') || descUpper.includes('EXPIRED')) {
     action = 'EXPIRED';
-    actionType = rawType.includes('SELL') ? 'Sell' : 'Buy';
-  } else if (rawType.includes('ASSIGN')) {
+    actionType = rawSubtype.includes('SELL') ? 'Sell' : 'Buy';
+  } else if (rawSubtype.includes('ASSIGN')) {
     action = 'ASSIGNED';
     actionType = 'Sell';
-  } else if (rawType.includes('SELL') || rawType === 'SLD') {
+  } else if (rawSubtype.includes('SELL') || rawSubtype.includes('SHORT')) {
     action = 'STO';
     actionType = 'Sell';
   } else {
@@ -550,23 +594,42 @@ export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quan
     return { strategyName: 'Equity / Stock', strategyType: 'Stock' };
   }
 
+  // 1 Leg
   if (optionLegs.length === 1) {
     const leg = optionLegs[0];
     const isFuture = leg.details?.isFuture;
     const optType = leg.details?.optionType || 'Option';
     const action = leg.details?.action;
-    const isShort = action === 'STO' || (leg.details?.signedQuantity && leg.details.signedQuantity < 0) || ((leg.quantity || 0) < 0);
+    const isShort = action === 'STO' || action === 'STC' || (leg.details?.signedQuantity && leg.details.signedQuantity < 0) || ((leg.quantity || 0) < 0);
     const prefix = isShort ? 'Short' : 'Long';
-    const name = isFuture ? 'Futures Option' : `${prefix} ${optType === 'CALL' ? 'Call' : 'Put'}`;
+    const name = isFuture ? `${prefix} Fut Option` : `${prefix} ${optType === 'CALL' ? 'Call' : 'Put'}`;
     return { strategyName: name, strategyType: 'Single' };
   }
 
+  // Check unique strikes, types, and expirations
+  const strikes = Array.from(new Set(optionLegs.map(l => l.details?.strike).filter((s): s is number => s !== undefined && !isNaN(s))));
+  const expirations = Array.from(new Set(optionLegs.map(l => l.details?.expirationDate).filter(Boolean)));
+  const calls = optionLegs.filter(l => l.details?.optionType === 'CALL');
+  const puts = optionLegs.filter(l => l.details?.optionType === 'PUT');
+
+  // Case A: All legs have the SAME STRIKE (e.g. STO followed by BTC round-trip on same strike, or multiple contracts)
+  if (strikes.length === 1) {
+    const firstLeg = optionLegs[0].details;
+    const optType = firstLeg?.optionType === 'CALL' ? 'Call' : 'Put';
+    const hasSTO = optionLegs.some(l => l.details?.action === 'STO');
+    const hasBTO = optionLegs.some(l => l.details?.action === 'BTO');
+    const prefix = hasSTO ? 'Short' : (hasBTO ? 'Long' : 'Single');
+    const name = `${prefix} ${optType}`;
+    return { strategyName: name, strategyType: 'Single' };
+  }
+
+  // Case B: 2 distinct strikes
   if (optionLegs.length === 2) {
     const leg1 = optionLegs[0].details;
     const leg2 = optionLegs[1].details;
     if (leg1 && leg2) {
-      const q1 = leg1.signedQuantity || (leg1.action === 'STO' ? -leg1.quantity : leg1.quantity);
-      const q2 = leg2.signedQuantity || (leg2.action === 'STO' ? -leg2.quantity : leg2.quantity);
+      const q1 = leg1.signedQuantity || (leg1.action === 'STO' || leg1.action === 'STC' ? -leg1.quantity : leg1.quantity);
+      const q2 = leg2.signedQuantity || (leg2.action === 'STO' || leg2.action === 'STC' ? -leg2.quantity : leg2.quantity);
       const sameExp = leg1.expirationDate && leg2.expirationDate && leg1.expirationDate === leg2.expirationDate;
       const sameType = leg1.optionType === leg2.optionType;
 
@@ -584,6 +647,7 @@ export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quan
             return { strategyName: `${leg1.optionType === 'CALL' ? 'Calls' : 'Puts'} Spread`, strategyType: 'Custom' };
           }
         } else {
+          // 1 Call + 1 Put
           if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
             return { strategyName: 'Straddle', strategyType: 'Straddle' };
           } else {
@@ -600,15 +664,29 @@ export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quan
     }
   }
 
+  // Case C: 3 Legs
   if (optionLegs.length === 3) {
-    return { strategyName: 'Butterfly', strategyType: 'Butterfly' };
+    if (strikes.length === 3 && (calls.length === 3 || puts.length === 3)) {
+      return { strategyName: 'Butterfly', strategyType: 'Butterfly' };
+    }
+    return { strategyName: 'Multi-Leg (3 legs)', strategyType: 'Custom' };
   }
 
+  // Case D: 4 Legs (Only a true Iron Condor if 2 Calls + 2 Puts with 4 distinct strikes)
   if (optionLegs.length === 4) {
-    return { strategyName: 'Iron Condor', strategyType: 'Iron Condor' };
+    if (calls.length === 2 && puts.length === 2 && strikes.length >= 3) {
+      if (strikes.length === 3) {
+        return { strategyName: 'Iron Fly', strategyType: 'Iron Fly' };
+      }
+      return { strategyName: 'Iron Condor', strategyType: 'Iron Condor' };
+    }
+    if (calls.length === 4 || puts.length === 4) {
+      return { strategyName: `${calls.length === 4 ? 'Calls' : 'Puts'} Spread`, strategyType: 'Custom' };
+    }
+    return { strategyName: 'Multi-Leg (4 legs)', strategyType: 'Custom' };
   }
 
-  return { strategyName: 'Multi-Leg', strategyType: 'Custom' };
+  return { strategyName: 'Multi-Leg Structure', strategyType: 'Custom' };
 }
 
 export interface StrategyGroup<T> {
@@ -685,14 +763,26 @@ export function groupItemsByTastyStrategy<T extends {
     const futureCycle = firstItem.details?.futureCycle;
     const isFuture = Boolean(firstItem.details?.isFuture || sym.startsWith('/'));
 
-    // Step 2: Group underlying items by Expiration Date (or non-option stock bucket)
+    // Step 2: Group underlying items by Expiration Date & Strike for closed trade cycles vs Expiration for open positions
     const byExp: Record<string, T[]> = {};
     for (const item of uItems) {
-      const exp = item.details?.isOption ? (item.details?.expirationDate || 'UNKNOWN_EXP') : 'EQUITY';
-      if (!byExp[exp]) {
-        byExp[exp] = [];
+      const isTradeItem = 'date' in item && 'status' in item && !('openPnl' in item);
+      let groupKey = 'EQUITY';
+      if (item.details?.isOption) {
+        const exp = item.details?.expirationDate || 'UNKNOWN_EXP';
+        if (isTradeItem) {
+          // For historical trades: group by (expiration + strike) so round-trip STO/BTC on the same strike are kept together as a single trade cycle
+          const strikeKey = item.details?.strike !== undefined ? `${item.details.strike}${item.details.optionTypeShort || ''}` : 'NO_STRIKE';
+          groupKey = `${exp}_${strikeKey}`;
+        } else {
+          // For open positions: group by expiration (all open legs in the same cycle form the active portfolio strategy)
+          groupKey = exp;
+        }
       }
-      byExp[exp].push(item);
+      if (!byExp[groupKey]) {
+        byExp[groupKey] = [];
+      }
+      byExp[groupKey].push(item);
     }
 
     const strategies: StrategyGroup<T>[] = [];
