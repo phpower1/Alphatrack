@@ -150,13 +150,15 @@ async function getTastytradeSession(uid: string): Promise<TastytradeSessionData 
       });
       return session;
     } catch (err: any) {
-      // If 401 and rememberToken exists, refresh session
+      // If 401 and rememberToken exists, refresh session with Tastytrade
       if (err.response?.status === 401 && session.rememberToken && session.login) {
         try {
           console.log(`[Tastytrade] Session expired for ${uid}. Re-authenticating with rememberToken...`);
           const refreshRes = await axios.post(`${TASTYTRADE_API_BASE}/sessions`, {
             login: session.login,
+            "remember-token": session.rememberToken,
             remember_token: session.rememberToken,
+            "remember-me": true,
             remember_me: true
           }, {
             headers: {
@@ -186,7 +188,7 @@ async function getTastytradeSession(uid: string): Promise<TastytradeSessionData 
           console.warn(`[Tastytrade] RememberToken re-auth failed for ${uid}:`, rErr.response?.data || rErr.message);
         }
       }
-      return null;
+      return session;
     }
   }
 
@@ -1019,6 +1021,7 @@ async function startServer() {
           success: true,
           user,
           login: login ? login.trim() : undefined,
+          sessionToken,
           rememberToken,
           sessionTokenMasked: `${sessionToken.slice(0, 6)}...`
         });
@@ -1057,56 +1060,99 @@ async function startServer() {
     }
   });
 
-  // T1.1 Tastytrade Restore Session with Remember Token (Silent Re-auth)
+  // T1.1 Tastytrade Restore Session with Token or Remember Token (Silent Re-auth)
   app.post("/api/tastytrade/restore-session", async (req, res) => {
-    const { uid, login, rememberToken } = req.body;
-    if (!uid || !login || !rememberToken) {
-      return res.status(400).json({ error: "Missing uid, login, or rememberToken" });
+    const { uid, login, rememberToken, sessionToken } = req.body;
+    if (!uid) {
+      return res.status(400).json({ error: "Missing uid" });
     }
 
     try {
-      console.log(`[Tastytrade] Restoring persistent session for user ${login} (${uid})...`);
-      const refreshRes = await axios.post(`${TASTYTRADE_API_BASE}/sessions`, {
-        login: login.trim(),
-        remember_token: rememberToken,
-        remember_me: true
-      }, {
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          "User-Agent": "Alphatrack/1.0"
-        },
-        validateStatus: (status) => status < 500
-      });
-
-      if (refreshRes.status === 201) {
-        const sessionToken = refreshRes.data?.data?.["session-token"];
-        const newRememberToken = refreshRes.data?.data?.["remember-token"] || rememberToken;
-        const user = refreshRes.data?.data?.user;
-
-        if (sessionToken) {
-          const sessionData: TastytradeSessionData = {
-            sessionToken,
-            rememberToken: newRememberToken,
-            user,
-            login: login.trim(),
-            updatedAt: new Date().toISOString()
-          };
-          await saveTastytradeSession(uid, sessionData);
-          console.log(`[Tastytrade] Successfully restored session for user ${user?.email || login}`);
-          return res.json({
-            success: true,
-            user,
-            login: login.trim(),
-            rememberToken: newRememberToken,
-            sessionTokenMasked: `${sessionToken.slice(0, 6)}...`
+      // 1. If an existing sessionToken was passed, test if it's still alive (24h validity)
+      if (sessionToken) {
+        try {
+          const testRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
+            headers: {
+              Authorization: sessionToken,
+              Accept: "application/json"
+            },
+            timeout: 5000
           });
+
+          if (testRes.status === 200) {
+            const user = testRes.data?.data;
+            const sessionData: TastytradeSessionData = {
+              sessionToken,
+              rememberToken,
+              user,
+              login: login ? login.trim() : undefined,
+              updatedAt: new Date().toISOString()
+            };
+            await saveTastytradeSession(uid, sessionData);
+            console.log(`[Tastytrade] Reused active sessionToken for ${login || uid}`);
+            return res.json({
+              success: true,
+              user,
+              login: login ? login.trim() : undefined,
+              sessionToken,
+              rememberToken
+            });
+          }
+        } catch (sErr) {
+          console.log(`[Tastytrade] Cached sessionToken expired for ${login || uid}, attempting remember-token refresh...`);
         }
       }
 
-      const errMsg = refreshRes.data?.error?.message || refreshRes.data?.message || "Failed to restore Tastytrade session";
-      console.warn(`[Tastytrade] Restore session failed:`, errMsg);
-      return res.status(refreshRes.status || 401).json({ error: errMsg });
+      // 2. Re-authenticate using rememberToken
+      if (rememberToken && login) {
+        console.log(`[Tastytrade] Restoring persistent session for user ${login} (${uid})...`);
+        const refreshRes = await axios.post(`${TASTYTRADE_API_BASE}/sessions`, {
+          login: login.trim(),
+          "remember-token": rememberToken,
+          remember_token: rememberToken,
+          "remember-me": true,
+          remember_me: true
+        }, {
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            "User-Agent": "Alphatrack/1.0"
+          },
+          validateStatus: (status) => status < 500
+        });
+
+        if (refreshRes.status === 201) {
+          const newSessionToken = refreshRes.data?.data?.["session-token"];
+          const newRememberToken = refreshRes.data?.data?.["remember-token"] || rememberToken;
+          const user = refreshRes.data?.data?.user;
+
+          if (newSessionToken) {
+            const sessionData: TastytradeSessionData = {
+              sessionToken: newSessionToken,
+              rememberToken: newRememberToken,
+              user,
+              login: login.trim(),
+              updatedAt: new Date().toISOString()
+            };
+            await saveTastytradeSession(uid, sessionData);
+            console.log(`[Tastytrade] Successfully restored session with remember-token for user ${user?.email || login}`);
+            return res.json({
+              success: true,
+              user,
+              login: login.trim(),
+              sessionToken: newSessionToken,
+              rememberToken: newRememberToken,
+              sessionTokenMasked: `${newSessionToken.slice(0, 6)}...`
+            });
+          }
+        }
+
+        const errMsg = refreshRes.data?.error?.message || refreshRes.data?.message || "Failed to restore Tastytrade session";
+        console.warn(`[Tastytrade] Restore session failed:`, errMsg);
+        return res.status(refreshRes.status || 401).json({ error: errMsg });
+      }
+
+      return res.status(400).json({ error: "Missing rememberToken or sessionToken" });
     } catch (err: any) {
       console.error(`[Tastytrade] Restore session error:`, err.response?.data || err.message);
       res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || err.message || "Failed to restore session" });

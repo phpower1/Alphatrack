@@ -44,7 +44,8 @@ const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
 
 interface StoredTastytradeSession {
   login: string;
-  rememberToken: string;
+  sessionToken?: string;
+  rememberToken?: string;
   user?: any;
   updatedAt?: string;
 }
@@ -236,9 +237,10 @@ export default function App() {
         setTastyPassword('');
 
         // Persist session metadata to Firestore & LocalStorage for automatic reconnect
-        if (data.rememberToken && (data.login || tastyLogin)) {
+        if ((data.sessionToken || data.rememberToken) && (data.login || tastyLogin)) {
           const sessionToSave: StoredTastytradeSession = {
             login: data.login || tastyLogin.trim(),
+            sessionToken: data.sessionToken,
             rememberToken: data.rememberToken,
             user: data.user,
             updatedAt: new Date().toISOString()
@@ -415,7 +417,7 @@ export default function App() {
             } catch (e) {}
           }
 
-          if (savedSession?.rememberToken && savedSession?.login) {
+          if (savedSession && (savedSession.sessionToken || savedSession.rememberToken) && savedSession.login) {
             try {
               console.log(`[Tastytrade] Restoring persistent connection for user ${savedSession.login}...`);
               const restoreRes = await fetch('/api/tastytrade/restore-session', {
@@ -424,6 +426,7 @@ export default function App() {
                 body: JSON.stringify({
                   uid,
                   login: savedSession.login,
+                  sessionToken: savedSession.sessionToken,
                   rememberToken: savedSession.rememberToken
                 })
               });
@@ -431,23 +434,20 @@ export default function App() {
               if (restoreRes.ok && restoreData.success) {
                 isTastyConnected = true;
                 tastyStatusData = { isConnected: true, user: restoreData.user };
-                if (restoreData.rememberToken) {
-                  const updatedSession: StoredTastytradeSession = {
-                    ...savedSession,
-                    rememberToken: restoreData.rememberToken,
-                    user: restoreData.user || savedSession.user,
-                    updatedAt: new Date().toISOString()
-                  };
-                  saveLocalTastySession(updatedSession);
-                  setDoc(doc(db, 'users', uid), { tastytradeSession: updatedSession }, { merge: true }).catch(() => {});
-                }
+                const updatedSession: StoredTastytradeSession = {
+                  ...savedSession,
+                  sessionToken: restoreData.sessionToken || savedSession.sessionToken,
+                  rememberToken: restoreData.rememberToken || savedSession.rememberToken,
+                  user: restoreData.user || savedSession.user,
+                  updatedAt: new Date().toISOString()
+                };
+                saveLocalTastySession(updatedSession);
+                setDoc(doc(db, 'users', uid), { tastytradeSession: updatedSession }, { merge: true }).catch(() => {});
               } else {
-                console.warn('[Tastytrade] Stored remember token expired or rejected, clearing stale token.');
-                saveLocalTastySession(null);
-                setDoc(doc(db, 'users', uid), { tastytradeSession: null }, { merge: true }).catch(() => {});
+                console.warn('[Tastytrade] Auto-restore did not succeed, keeping saved session metadata for next attempt.');
               }
             } catch (rErr) {
-              console.warn('[Tastytrade] Silent auto-restore error:', rErr);
+              console.warn('[Tastytrade] Silent auto-restore network error:', rErr);
             }
           }
         }
