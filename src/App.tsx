@@ -37,7 +37,35 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 // Firebase imports
 import { auth, loginWithGoogle, logout, db } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { getDocFromServer, doc } from 'firebase/firestore';
+import { getDocFromServer, doc, setDoc } from 'firebase/firestore';
+
+// Local / Firestore persistence helpers for Tastytrade session
+const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
+
+interface StoredTastytradeSession {
+  login: string;
+  rememberToken: string;
+  user?: any;
+  updatedAt?: string;
+}
+
+const saveLocalTastySession = (data: StoredTastytradeSession | null) => {
+  try {
+    if (data) {
+      localStorage.setItem(TASTY_STORAGE_KEY, JSON.stringify(data));
+    } else {
+      localStorage.removeItem(TASTY_STORAGE_KEY);
+    }
+  } catch (e) {}
+};
+
+const getLocalTastySession = (): StoredTastytradeSession | null => {
+  try {
+    const raw = localStorage.getItem(TASTY_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+};
 import { 
   parseTastyTradeItem, 
   isTradeActivity, 
@@ -205,6 +233,23 @@ export default function App() {
         setTastyRequires2FA(false);
         setTastyOtp('');
         setTastyPassword('');
+
+        // Persist session metadata to Firestore & LocalStorage for automatic reconnect
+        if (data.rememberToken && (data.login || tastyLogin)) {
+          const sessionToSave: StoredTastytradeSession = {
+            login: data.login || tastyLogin.trim(),
+            rememberToken: data.rememberToken,
+            user: data.user,
+            updatedAt: new Date().toISOString()
+          };
+          saveLocalTastySession(sessionToSave);
+          try {
+            setDoc(doc(db, 'users', user.uid), {
+              tastytradeSession: sessionToSave
+            }, { merge: true }).catch(err => console.warn('Could not sync Tastytrade session to Firestore:', err));
+          } catch (e) {}
+        }
+
         await fetchAllData(user.uid);
       } else if (is2FA) {
         setTastyRequires2FA(true);
@@ -227,6 +272,12 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uid: user.uid })
       });
+      saveLocalTastySession(null);
+      try {
+        await setDoc(doc(db, 'users', user.uid), {
+          tastytradeSession: null
+        }, { merge: true });
+      } catch (e) {}
       setTastyConnected(false);
       setTastyUser(null);
       setTastyDialogOpen(false);
@@ -343,15 +394,67 @@ export default function App() {
       );
       setAccounts(fetchedAccounts);
 
-      // 2. Check Tastytrade Direct Connection & Accounts
+      // 2. Check Tastytrade Direct Connection & Accounts (with persistent auto-restore)
       let tastyAccs: SnapTradeAccount[] = [];
       try {
-        const tastyStatusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(uid)}`);
-        const tastyStatusData = await tastyStatusRes.json();
-        setTastyConnected(Boolean(tastyStatusData.isConnected));
+        let tastyStatusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(uid)}`);
+        let tastyStatusData = await tastyStatusRes.json();
+        let isTastyConnected = Boolean(tastyStatusData.isConnected);
+
+        // If not currently connected on server (e.g. after an app update, container reboot, or restart), attempt silent restore
+        if (!isTastyConnected) {
+          let savedSession = getLocalTastySession();
+          if (!savedSession) {
+            try {
+              const userDoc = await getDocFromServer(doc(db, 'users', uid));
+              if (userDoc.exists() && userDoc.data()?.tastytradeSession) {
+                savedSession = userDoc.data().tastytradeSession;
+                if (savedSession) saveLocalTastySession(savedSession);
+              }
+            } catch (e) {}
+          }
+
+          if (savedSession?.rememberToken && savedSession?.login) {
+            try {
+              console.log(`[Tastytrade] Restoring persistent connection for user ${savedSession.login}...`);
+              const restoreRes = await fetch('/api/tastytrade/restore-session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  uid,
+                  login: savedSession.login,
+                  rememberToken: savedSession.rememberToken
+                })
+              });
+              const restoreData = await restoreRes.json();
+              if (restoreRes.ok && restoreData.success) {
+                isTastyConnected = true;
+                tastyStatusData = { isConnected: true, user: restoreData.user };
+                if (restoreData.rememberToken) {
+                  const updatedSession: StoredTastytradeSession = {
+                    ...savedSession,
+                    rememberToken: restoreData.rememberToken,
+                    user: restoreData.user || savedSession.user,
+                    updatedAt: new Date().toISOString()
+                  };
+                  saveLocalTastySession(updatedSession);
+                  setDoc(doc(db, 'users', uid), { tastytradeSession: updatedSession }, { merge: true }).catch(() => {});
+                }
+              } else {
+                console.warn('[Tastytrade] Stored remember token expired or rejected, clearing stale token.');
+                saveLocalTastySession(null);
+                setDoc(doc(db, 'users', uid), { tastytradeSession: null }, { merge: true }).catch(() => {});
+              }
+            } catch (rErr) {
+              console.warn('[Tastytrade] Silent auto-restore error:', rErr);
+            }
+          }
+        }
+
+        setTastyConnected(isTastyConnected);
         setTastyUser(tastyStatusData.user || null);
 
-        if (tastyStatusData.isConnected) {
+        if (isTastyConnected) {
           const tastyAccRes = await fetch(`/api/tastytrade/accounts?uid=${encodeURIComponent(uid)}`);
           const tastyAccData = await tastyAccRes.json();
           const rawTastyAccs = tastyAccData.items || [];
