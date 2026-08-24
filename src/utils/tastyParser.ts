@@ -255,6 +255,7 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     act.underlying_symbol ||
     ''
   ).trim();
+  const optionTicker = (act.option_symbol?.ticker || act.option_symbol?.symbol || '').trim();
   const rawSubtype = (
     act['transaction-sub-type'] ||
     act.transaction_sub_type ||
