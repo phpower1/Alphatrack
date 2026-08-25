@@ -948,19 +948,50 @@ export default function App() {
     let profit = 0;
     let daysHeld = 1;
 
-    if (trade.status === 'Closed' && trade.closePrice !== null && trade.closePrice !== undefined) {
-      const closePrice = trade.closePrice;
+    if (trade.status === 'Closed') {
+      const closePrice = trade.closePrice !== null && trade.closePrice !== undefined ? trade.closePrice : entryPrice;
       profit = trade.type === 'Buy'
         ? (closePrice - entryPrice) * quantity * multiplier
         : (entryPrice - closePrice) * quantity * multiplier;
-      try {
-        if (trade.closeDate && trade.date) {
+      
+      let days = 1;
+      // 1. If trade has closeDate and date, and closeDate != date:
+      if (trade.closeDate && trade.date && trade.closeDate !== trade.date) {
+        try {
           const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
-          daysHeld = !isNaN(d) && d > 0 ? d : 1;
-        }
-      } catch (e) {
-        daysHeld = 1;
+          if (!isNaN(d) && d > 0) days = d;
+        } catch {}
       }
+
+      // 2. If days is still 1, look for matching trades in `trades` with same symbol & strike & expiration
+      if (days === 1 && trades && trades.length > 0) {
+        const related = trades.filter(t => 
+          (t.symbol === trade.symbol || t.details?.fullSymbol === trade.details?.fullSymbol) && 
+          t.details?.expirationDate === trade.details?.expirationDate &&
+          t.details?.strike === trade.details?.strike
+        );
+        if (related.length > 1) {
+          const tDates = related.map(t => new Date(t.date).getTime()).filter(t => !isNaN(t));
+          if (tDates.length > 1) {
+            const minT = Math.min(...tDates);
+            const maxT = Math.max(...tDates);
+            const d = differenceInDays(new Date(maxT), new Date(minT));
+            if (!isNaN(d) && d > 0) days = d;
+          }
+        }
+      }
+
+      // 3. Fallback: if it expired, compute days between trade entry and expirationDate
+      if (days === 1 && trade.details?.expirationDate && trade.date) {
+        try {
+          const expDate = parseISO(trade.details.expirationDate);
+          const trDate = parseISO(trade.date);
+          const d = differenceInDays(expDate, trDate);
+          if (!isNaN(d) && d > 0) days = d;
+        } catch {}
+      }
+
+      daysHeld = Math.max(1, days);
     } else {
       // Open active position: match with open position's openPnl if available
       const matchingPos = (positions || []).find(p => 
@@ -977,14 +1008,21 @@ export default function App() {
           : entryPrice * 0.05 * quantity * multiplier;
       }
 
+      let days = 1;
       try {
         if (trade.date) {
           const d = differenceInDays(new Date(), parseISO(trade.date));
-          daysHeld = !isNaN(d) && d > 0 ? d : 1;
+          if (!isNaN(d) && d > 0) days = d;
         }
-      } catch (e) {
-        daysHeld = 1;
+      } catch {}
+
+      // Fallback from DTE at entry vs days left today
+      if (days === 1 && trade.details?.dte !== undefined && trade.details?.daysLeft !== undefined) {
+        const d = trade.details.dte - trade.details.daysLeft;
+        if (d > 0) days = d;
       }
+
+      daysHeld = Math.max(1, days);
     }
 
     const avgROI = reqCap > 0 ? (profit / reqCap) * 100 : 0;
@@ -1009,6 +1047,14 @@ export default function App() {
 
     const foundPos = (positions || []).find(p => p.id === activeTradeId);
     if (foundPos) {
+      // Find matching opening trade date if available
+      const matchingTrade = (trades || []).find(t => 
+        t.symbol === foundPos.symbol && 
+        t.details?.strike === foundPos.details?.strike &&
+        t.details?.expirationDate === foundPos.details?.expirationDate
+      );
+      const tradeDate = matchingTrade?.date || (foundPos as any).createdDate || new Date().toISOString();
+
       return {
         id: foundPos.id,
         accountId: foundPos.accountId,
@@ -1017,7 +1063,7 @@ export default function App() {
         type: foundPos.quantity >= 0 ? 'Buy' : 'Sell',
         quantity: Math.abs(foundPos.quantity),
         price: foundPos.averagePrice || foundPos.currentPrice,
-        date: new Date().toISOString(),
+        date: tradeDate,
         status: 'Open',
         closePrice: null,
         closeDate: null,
@@ -1063,10 +1109,20 @@ export default function App() {
     let maxDaysHeld = 1;
     let hasOpenLeg = false;
     let totalMarketVal = 0;
+    const itemDates: number[] = [];
 
     for (const item of activeStrategy.items as any[]) {
       const isPosItem = 'openPnl' in item;
       const isTradeItem = 'status' in item;
+
+      if (item.date) {
+        const t = new Date(item.date).getTime();
+        if (!isNaN(t)) itemDates.push(t);
+      }
+      if (item.closeDate) {
+        const t = new Date(item.closeDate).getTime();
+        if (!isNaN(t)) itemDates.push(t);
+      }
 
       if (isPosItem) {
         hasOpenLeg = true;
@@ -1091,12 +1147,51 @@ export default function App() {
       }
     }
 
+    // Compute strategy-level holding days across all legs in activeStrategy
+    let stratDaysHeld = 1;
+    if (itemDates.length > 1) {
+      const minDate = Math.min(...itemDates);
+      const maxDate = Math.max(...itemDates);
+      const span = differenceInDays(new Date(maxDate), new Date(minDate));
+      if (!isNaN(span) && span > 0) {
+        stratDaysHeld = span;
+      }
+    }
+
+    // If strategy is open, calculate elapsed days from earliest entry to today
+    if (hasOpenLeg && itemDates.length > 0) {
+      const minDate = Math.min(...itemDates);
+      const spanNow = differenceInDays(new Date(), new Date(minDate));
+      if (!isNaN(spanNow) && spanNow > 0) {
+        stratDaysHeld = Math.max(stratDaysHeld, spanNow);
+      }
+    }
+
+    // Fallbacks if span between dates was single day
+    if (stratDaysHeld === 1) {
+      if (maxDaysHeld > 1) {
+        stratDaysHeld = maxDaysHeld;
+      } else if (activeStrategy.expirationDate && itemDates.length > 0) {
+        try {
+          const expT = parseISO(activeStrategy.expirationDate).getTime();
+          const minDate = Math.min(...itemDates);
+          const spanExp = differenceInDays(new Date(expT), new Date(minDate));
+          if (!isNaN(spanExp) && spanExp > 0) {
+            stratDaysHeld = spanExp;
+          }
+        } catch {}
+      } else if (activeStrategy.dte !== undefined && activeStrategy.daysLeft !== undefined) {
+        const spanDte = activeStrategy.dte - activeStrategy.daysLeft;
+        if (spanDte > 0) stratDaysHeld = spanDte;
+      }
+    }
+
     if (totalReqCap <= 0) totalReqCap = Math.abs(activeStrategy.netCostBasis) || 1;
     if (totalPeakCap <= 0) totalPeakCap = totalReqCap * 1.15;
 
     const avgROI = totalReqCap > 0 ? (totalNetProfit / totalReqCap) * 100 : 0;
     const peakROI = totalPeakCap > 0 ? (totalNetProfit / totalPeakCap) * 100 : 0;
-    const annualizedROI = avgROI * (365 / Math.max(1, maxDaysHeld));
+    const annualizedROI = avgROI * (365 / Math.max(1, stratDaysHeld));
 
     return {
       strategyName: activeStrategy.strategyName,
@@ -1109,7 +1204,7 @@ export default function App() {
       avgROI: isNaN(avgROI) ? 0 : avgROI,
       peakROI: isNaN(peakROI) ? 0 : peakROI,
       annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI,
-      daysHeld: maxDaysHeld,
+      daysHeld: stratDaysHeld,
       totalValue: totalMarketVal,
       netCostBasis: activeStrategy.netCostBasis,
       netCurrentPrice: activeStrategy.netCurrentPrice
@@ -2477,7 +2572,7 @@ export default function App() {
                             </div>
                             <div className="flex justify-between border-t border-slate-800/60 pt-2">
                               <span className="text-slate-400 font-sans">Holding Period:</span>
-                              <span className="text-slate-200">{strategyMetrics.daysHeld} days</span>
+                              <span className="text-slate-200">{strategyMetrics.daysHeld} {strategyMetrics.daysHeld === 1 ? 'day' : 'days'}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">Strategy Annualized ROI:</span>
@@ -2516,7 +2611,7 @@ export default function App() {
                             </div>
                             <div className="flex justify-between border-t border-slate-800/60 pt-2">
                               <span className="text-slate-400 font-sans">Holding Period:</span>
-                              <span className="text-slate-200">{activeMetrics.daysHeld || 1} days</span>
+                              <span className="text-slate-200">{activeMetrics.daysHeld || 1} {(activeMetrics.daysHeld || 1) === 1 ? 'day' : 'days'}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">Annualized ROI:</span>
