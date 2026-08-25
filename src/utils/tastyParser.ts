@@ -583,7 +583,7 @@ export interface StrategyGroupInfo {
 }
 
 /**
- * Detect option strategy given an array of legs
+ * Detect option strategy given an array of legs (positions or historical trade activities)
  */
 export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quantity?: number; type?: string; price?: number }[]): StrategyGroupInfo {
   if (!legs || legs.length === 0) {
@@ -595,86 +595,138 @@ export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quan
     return { strategyName: 'Equity / Stock', strategyType: 'Stock' };
   }
 
-  // 1 Leg
-  if (optionLegs.length === 1) {
-    const leg = optionLegs[0];
-    const isFuture = leg.details?.isFuture;
-    const optType = leg.details?.optionType || 'Option';
-    const action = leg.details?.action;
-    const isShort = action === 'STO' || action === 'STC' || (leg.details?.signedQuantity && leg.details.signedQuantity < 0) || ((leg.quantity || 0) < 0);
+  // Aggregate option legs by unique contract (strike + optionType + expiration)
+  // This correctly condenses opening + closing/expired trades in trade history back into their underlying strategy legs
+  interface ContractLegSummary {
+    strike?: number;
+    optionType?: 'CALL' | 'PUT';
+    optionTypeShort?: 'C' | 'P';
+    expirationDate?: string;
+    isFuture?: boolean;
+    signedQuantity: number;
+    hasSTO: boolean;
+    hasBTO: boolean;
+    hasExpired: boolean;
+    hasClosed: boolean;
+    rawLegs: typeof legs;
+  }
+
+  const contractMap = new Map<string, ContractLegSummary>();
+
+  for (const leg of optionLegs) {
+    const d = leg.details;
+    const strike = d?.strike;
+    const optionType = d?.optionType;
+    const exp = d?.expirationDate || 'UNKNOWN_EXP';
+    const key = `${exp}_${strike ?? 'NO_STRIKE'}_${optionType ?? 'UNKNOWN_TYPE'}`;
+
+    let summary = contractMap.get(key);
+    if (!summary) {
+      summary = {
+        strike,
+        optionType,
+        optionTypeShort: d?.optionTypeShort,
+        expirationDate: d?.expirationDate,
+        isFuture: d?.isFuture,
+        signedQuantity: 0,
+        hasSTO: false,
+        hasBTO: false,
+        hasExpired: false,
+        hasClosed: false,
+        rawLegs: []
+      };
+      contractMap.set(key, summary);
+    }
+    summary.rawLegs.push(leg);
+
+    const action = d?.action;
+    if (action === 'STO') summary.hasSTO = true;
+    if (action === 'BTO') summary.hasBTO = true;
+    if (action === 'EXPIRED') summary.hasExpired = true;
+    if (action === 'BTC' || action === 'STC') summary.hasClosed = true;
+
+    // Calculate signed quantity:
+    // If opening action STO: negative quantity
+    // If opening action BTO: positive quantity
+    // If position: signed quantity
+    const qty = leg.quantity || d?.quantity || 1;
+    const itemSignedQty = d?.signedQuantity ?? (action === 'STO' || action === 'STC' ? -qty : qty);
+
+    if (action === 'STO') {
+      summary.signedQuantity = -Math.abs(qty);
+    } else if (action === 'BTO') {
+      summary.signedQuantity = Math.abs(qty);
+    } else if (summary.signedQuantity === 0) {
+      summary.signedQuantity = itemSignedQty;
+    }
+  }
+
+  const uniqueContracts = Array.from(contractMap.values());
+
+  // 1 Unique Contract Leg
+  if (uniqueContracts.length === 1) {
+    const c = uniqueContracts[0];
+    const isFuture = c.isFuture;
+    const optType = c.optionType === 'CALL' ? 'Call' : (c.optionType === 'PUT' ? 'Put' : 'Option');
+    const isShort = c.hasSTO || c.signedQuantity < 0;
     const prefix = isShort ? 'Short' : 'Long';
-    const name = isFuture ? `${prefix} Fut Option` : `${prefix} ${optType === 'CALL' ? 'Call' : 'Put'}`;
+    const name = isFuture ? `${prefix} Fut Option` : `${prefix} ${optType}`;
     return { strategyName: name, strategyType: 'Single' };
   }
 
-  // Check unique strikes, types, and expirations
-  const strikes = Array.from(new Set(optionLegs.map(l => l.details?.strike).filter((s): s is number => s !== undefined && !isNaN(s))));
-  const expirations = Array.from(new Set(optionLegs.map(l => l.details?.expirationDate).filter(Boolean)));
-  const calls = optionLegs.filter(l => l.details?.optionType === 'CALL');
-  const puts = optionLegs.filter(l => l.details?.optionType === 'PUT');
+  const strikes = Array.from(new Set(uniqueContracts.map(c => c.strike).filter((s): s is number => s !== undefined && !isNaN(s))));
+  const calls = uniqueContracts.filter(c => c.optionType === 'CALL');
+  const puts = uniqueContracts.filter(c => c.optionType === 'PUT');
 
-  // Case A: All legs have the SAME STRIKE (e.g. STO followed by BTC round-trip on same strike, or multiple contracts)
-  if (strikes.length === 1) {
-    const firstLeg = optionLegs[0].details;
-    const optType = firstLeg?.optionType === 'CALL' ? 'Call' : 'Put';
-    const hasSTO = optionLegs.some(l => l.details?.action === 'STO');
-    const hasBTO = optionLegs.some(l => l.details?.action === 'BTO');
-    const prefix = hasSTO ? 'Short' : (hasBTO ? 'Long' : 'Single');
-    const name = `${prefix} ${optType}`;
-    return { strategyName: name, strategyType: 'Single' };
-  }
+  // Case A: 2 distinct strikes
+  if (uniqueContracts.length === 2) {
+    const leg1 = uniqueContracts[0];
+    const leg2 = uniqueContracts[1];
+    const q1 = leg1.signedQuantity;
+    const q2 = leg2.signedQuantity;
+    const sameExp = leg1.expirationDate && leg2.expirationDate && leg1.expirationDate === leg2.expirationDate;
+    const sameType = leg1.optionType && leg2.optionType && leg1.optionType === leg2.optionType;
 
-  // Case B: 2 distinct strikes
-  if (optionLegs.length === 2) {
-    const leg1 = optionLegs[0].details;
-    const leg2 = optionLegs[1].details;
-    if (leg1 && leg2) {
-      const q1 = leg1.signedQuantity || (leg1.action === 'STO' || leg1.action === 'STC' ? -leg1.quantity : leg1.quantity);
-      const q2 = leg2.signedQuantity || (leg2.action === 'STO' || leg2.action === 'STC' ? -leg2.quantity : leg2.quantity);
-      const sameExp = leg1.expirationDate && leg2.expirationDate && leg1.expirationDate === leg2.expirationDate;
-      const sameType = leg1.optionType === leg2.optionType;
-
-      if (sameExp) {
-        if (sameType) {
-          const isOppositeSide = (q1 > 0 && q2 < 0) || (q1 < 0 && q2 > 0);
-          if (isOppositeSide) {
-            const ratio = Math.abs(q1) / Math.abs(q2);
-            if (Math.abs(ratio - 1) < 0.05) {
-              return { strategyName: 'Vertical', strategyType: 'Vertical' };
-            } else {
-              return { strategyName: 'Ratio', strategyType: 'Ratio' };
-            }
+    if (sameExp) {
+      if (sameType) {
+        const isOppositeSide = (q1 > 0 && q2 < 0) || (q1 < 0 && q2 > 0);
+        if (isOppositeSide) {
+          const ratio = Math.abs(q1) / Math.abs(q2);
+          if (Math.abs(ratio - 1) < 0.05) {
+            return { strategyName: 'Vertical', strategyType: 'Vertical' };
           } else {
-            return { strategyName: `${leg1.optionType === 'CALL' ? 'Calls' : 'Puts'} Spread`, strategyType: 'Custom' };
+            return { strategyName: 'Ratio', strategyType: 'Ratio' };
           }
         } else {
-          // 1 Call + 1 Put
-          if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
-            return { strategyName: 'Straddle', strategyType: 'Straddle' };
-          } else {
-            return { strategyName: 'Strangle', strategyType: 'Strangle' };
-          }
+          return { strategyName: `${leg1.optionType === 'CALL' ? 'Calls' : 'Puts'} Spread`, strategyType: 'Custom' };
         }
       } else {
+        // 1 Call + 1 Put
         if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
-          return { strategyName: 'Calendar', strategyType: 'Calendar' };
+          return { strategyName: 'Straddle', strategyType: 'Straddle' };
         } else {
-          return { strategyName: 'Diagonal', strategyType: 'Diagonal' };
+          return { strategyName: 'Strangle', strategyType: 'Strangle' };
         }
+      }
+    } else {
+      if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
+        return { strategyName: 'Calendar', strategyType: 'Calendar' };
+      } else {
+        return { strategyName: 'Diagonal', strategyType: 'Diagonal' };
       }
     }
   }
 
-  // Case C: 3 Legs
-  if (optionLegs.length === 3) {
+  // Case B: 3 Legs
+  if (uniqueContracts.length === 3) {
     if (strikes.length === 3 && (calls.length === 3 || puts.length === 3)) {
       return { strategyName: 'Butterfly', strategyType: 'Butterfly' };
     }
     return { strategyName: 'Multi-Leg (3 legs)', strategyType: 'Custom' };
   }
 
-  // Case D: 4 Legs (Only a true Iron Condor if 2 Calls + 2 Puts with 4 distinct strikes)
-  if (optionLegs.length === 4) {
+  // Case C: 4 Legs
+  if (uniqueContracts.length === 4) {
     if (calls.length === 2 && puts.length === 2 && strikes.length >= 3) {
       if (strikes.length === 3) {
         return { strategyName: 'Iron Fly', strategyType: 'Iron Fly' };
@@ -764,21 +816,12 @@ export function groupItemsByTastyStrategy<T extends {
     const futureCycle = firstItem.details?.futureCycle;
     const isFuture = Boolean(firstItem.details?.isFuture || sym.startsWith('/'));
 
-    // Step 2: Group underlying items by Expiration Date & Strike for closed trade cycles vs Expiration for open positions
+    // Step 2: Group underlying items by Expiration Date for options (forming multi-leg strategy groups) and EQUITY for stocks
     const byExp: Record<string, T[]> = {};
     for (const item of uItems) {
-      const isTradeItem = 'date' in item && 'status' in item && !('openPnl' in item);
       let groupKey = 'EQUITY';
       if (item.details?.isOption) {
-        const exp = item.details?.expirationDate || 'UNKNOWN_EXP';
-        if (isTradeItem) {
-          // For historical trades: group by (expiration + strike) so round-trip STO/BTC on the same strike are kept together as a single trade cycle
-          const strikeKey = item.details?.strike !== undefined ? `${item.details.strike}${item.details.optionTypeShort || ''}` : 'NO_STRIKE';
-          groupKey = `${exp}_${strikeKey}`;
-        } else {
-          // For open positions: group by expiration (all open legs in the same cycle form the active portfolio strategy)
-          groupKey = exp;
-        }
+        groupKey = item.details?.expirationDate || 'UNKNOWN_EXP';
       }
       if (!byExp[groupKey]) {
         byExp[groupKey] = [];
@@ -789,6 +832,16 @@ export function groupItemsByTastyStrategy<T extends {
     const strategies: StrategyGroup<T>[] = [];
 
     for (const [expKey, expItems] of Object.entries(byExp)) {
+      // Sort legs within strategy: by strike descending, then by trade date descending
+      expItems.sort((a, b) => {
+        const sA = a.details?.strike ?? 0;
+        const sB = b.details?.strike ?? 0;
+        if (sA !== sB) return sB - sA;
+        const dA = (a as any).date || '';
+        const dB = (b as any).date || '';
+        return dB.localeCompare(dA);
+      });
+
       // Classify strategy for this expiration bucket
       const stratInfo = detectOptionStrategy(expItems);
       const firstExpItem = expItems[0];
