@@ -37,7 +37,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 // Firebase imports
 import { auth, loginWithGoogle, logout, db } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
-import { getDocFromServer, doc, setDoc } from 'firebase/firestore';
+import { getDoc, doc, setDoc } from 'firebase/firestore';
 
 // Local / Firestore persistence helpers for Tastytrade session
 const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
@@ -131,6 +131,9 @@ interface Position {
   date?: string;
   createdDate?: string;
   costBasis?: number;
+  capReq?: number;
+  requiredCapital?: number;
+  peakCapital?: number;
   extrinsicValue?: number;
   realizedDayGain?: number;
 }
@@ -348,13 +351,11 @@ export default function App() {
       setIsAuthReady(true);
 
       if (currentUser) {
-        try {
-          await getDocFromServer(doc(db, 'users', currentUser.uid));
-        } catch (error) {
+        getDoc(doc(db, 'users', currentUser.uid)).catch((error) => {
           if (error instanceof Error && error.message.includes('the client is offline')) {
             setDbError('Firebase client is offline. App is running in local mode.');
           }
-        }
+        });
         fetchAllData(currentUser.uid);
       } else {
         setAccounts([]);
@@ -414,7 +415,7 @@ export default function App() {
           let savedSession = getLocalTastySession();
           if (!savedSession) {
             try {
-              const userDoc = await getDocFromServer(doc(db, 'users', uid));
+              const userDoc = await getDoc(doc(db, 'users', uid));
               if (userDoc.exists() && userDoc.data()?.tastytradeSession) {
                 savedSession = userDoc.data().tastytradeSession;
                 if (savedSession) saveLocalTastySession(savedSession);
@@ -537,8 +538,19 @@ export default function App() {
               const units = details.quantity;
               const price = details.price;
               const tradeDate = act.trade_date || act.settlement_date || new Date().toISOString();
-              const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units;
-              const reqCapital = isNaN(rawAmount) || rawAmount === 0 ? price * units : rawAmount;
+              const multiplier = details.multiplier || getContractMultiplier(details.rootSymbol, details.isOption, details.isFuture);
+              
+              const brokerReqCap = parseFloat(act.required_capital || act.cap_req || act['cap-req'] || act.margin_requirement || '0');
+              const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units * multiplier;
+              let reqCapital = brokerReqCap > 0 ? brokerReqCap : (isNaN(rawAmount) || rawAmount === 0 ? price * units * multiplier : rawAmount);
+
+              if (isBuy === false && details.isOption && (!brokerReqCap || brokerReqCap <= 0)) {
+                const root = (details.rootSymbol || sym).toUpperCase();
+                if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
+                else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
+                else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
+                else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
+              }
 
               // A trade is an active open position ONLY if it has an unexpired future expiration date
               const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
@@ -625,6 +637,36 @@ export default function App() {
                 ? Math.abs(parseFloat(p.total_value))
                 : Math.abs(units * (currentPrice || avgPrice) * multiplier);
 
+              const brokerCapReq = parseFloat(
+                p.cap_req || 
+                p.capReq || 
+                p['cap-req'] || 
+                p['capital-requirement'] || 
+                p.capital_requirement || 
+                p['margin-requirement'] || 
+                p.margin_requirement || 
+                p['buying-power-requirement'] || 
+                p.buying_power_requirement || 
+                p.required_capital || 
+                '0'
+              );
+
+              let reqCapital = brokerCapReq;
+              if (!reqCapital || reqCapital <= 0) {
+                if (units > 0) {
+                  reqCapital = Math.abs(units * avgPrice * multiplier);
+                } else if (details.isOption) {
+                  const root = (details.rootSymbol || sym).toUpperCase();
+                  if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
+                  else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
+                  else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
+                  else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
+                  else reqCapital = Math.max(Math.abs(units * avgPrice * multiplier * 3), Math.abs(units) * 500);
+                } else {
+                  reqCapital = totalValue;
+                }
+              }
+
               return {
                 id: `${acc.id}-pos-${idx}`,
                 accountId: acc.id,
@@ -638,7 +680,10 @@ export default function App() {
                 multiplier: multiplier,
                 details: details,
                 date: entryDate,
-                createdDate: entryDate
+                createdDate: entryDate,
+                capReq: reqCapital,
+                requiredCapital: reqCapital,
+                peakCapital: reqCapital * 1.15
               };
             });
 
@@ -750,6 +795,36 @@ export default function App() {
                   entryDate = subDays(new Date(), daysAgo).toISOString();
                 }
 
+                const brokerCapReq = parseFloat(
+                  p.cap_req || 
+                  p.capReq || 
+                  p['cap-req'] || 
+                  p['capital-requirement'] || 
+                  p.capital_requirement || 
+                  p['margin-requirement'] || 
+                  p.margin_requirement || 
+                  p['buying-power-requirement'] || 
+                  p.buying_power_requirement || 
+                  p.required_capital || 
+                  '0'
+                );
+
+                let reqCapital = brokerCapReq;
+                if (!reqCapital || reqCapital <= 0) {
+                  if (units > 0) {
+                    reqCapital = Math.abs(units * avgPrice * multiplier);
+                  } else if (details.isOption) {
+                    const root = (details.rootSymbol || sym).toUpperCase();
+                    if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
+                    else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
+                    else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
+                    else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
+                    else reqCapital = Math.max(Math.abs(units * avgPrice * multiplier * 3), Math.abs(units) * 500);
+                  } else {
+                    reqCapital = totalValue;
+                  }
+                }
+
                 return {
                   id: `tasty-${acc.number}-pos-${idx}`,
                   accountId: acc.id,
@@ -766,7 +841,10 @@ export default function App() {
                   details: details,
                   multiplier: multiplier,
                   date: entryDate,
-                  createdDate: entryDate
+                  createdDate: entryDate,
+                  capReq: reqCapital,
+                  requiredCapital: reqCapital,
+                  peakCapital: reqCapital * 1.15
                 };
               });
 
@@ -790,8 +868,18 @@ export default function App() {
                 const price = details.price;
                 const tradeDate = tx['executed-at'] || tx.executed_at || new Date().toISOString();
                 const multiplier = details.multiplier || 1;
+                
+                const brokerReqCap = parseFloat(tx.required_capital || tx.cap_req || tx['cap-req'] || tx.margin_requirement || '0');
                 const rawAmount = tx.value ? Math.abs(parseFloat(tx.value)) : price * units * multiplier;
-                const reqCapital = isNaN(rawAmount) || rawAmount === 0 ? price * units * multiplier : rawAmount;
+                let reqCapital = brokerReqCap > 0 ? brokerReqCap : (isNaN(rawAmount) || rawAmount === 0 ? price * units * multiplier : rawAmount);
+
+                if (isBuy === false && details.isOption && (!brokerReqCap || brokerReqCap <= 0)) {
+                  const root = (details.rootSymbol || sym).toUpperCase();
+                  if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
+                  else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
+                  else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
+                  else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
+                }
 
                 const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
                 const hasValidFutureExpiry = details.daysLeft !== undefined && details.daysLeft >= 0 && !details.isExpired;
@@ -1142,6 +1230,9 @@ export default function App() {
         tradeDate = new Date().toISOString();
       }
 
+      const req = foundPos.requiredCapital || foundPos.capReq || (foundPos.totalValue && foundPos.totalValue > 0 ? foundPos.totalValue : (foundPos.averagePrice * Math.abs(foundPos.quantity)));
+      const peak = foundPos.peakCapital || (req * 1.15);
+
       return {
         id: foundPos.id,
         accountId: foundPos.accountId,
@@ -1154,8 +1245,8 @@ export default function App() {
         status: 'Open',
         closePrice: null,
         closeDate: null,
-        requiredCapital: foundPos.totalValue || (foundPos.averagePrice * Math.abs(foundPos.quantity)),
-        peakCapital: (foundPos.totalValue || (foundPos.averagePrice * Math.abs(foundPos.quantity))) * 1.15,
+        requiredCapital: req,
+        peakCapital: peak,
         description: `${foundPos.details?.action || (foundPos.quantity >= 0 ? 'BTO' : 'STO')} ${Math.abs(foundPos.quantity)} ${foundPos.symbol}`,
         details: foundPos.details
       } as Trade;
@@ -1241,9 +1332,15 @@ export default function App() {
         const itemPrice = item.averagePrice || item.currentPrice || 0;
         const qty = Math.abs(item.quantity || 1);
         const mult = item.details?.multiplier || 1;
-        const req = (item.totalValue && item.totalValue > 0) ? item.totalValue : (itemPrice * qty * mult);
-        const peak = req * 1.15;
-        const curr = item.totalValue || (Math.abs(item.currentPrice || itemPrice) * qty * mult);
+        const req = (item.requiredCapital && item.requiredCapital > 0)
+          ? item.requiredCapital
+          : (item.capReq && item.capReq > 0)
+            ? item.capReq
+            : (item.totalValue && item.totalValue > 0)
+              ? item.totalValue
+              : (itemPrice * qty * mult);
+        const peak = item.peakCapital || (req * 1.15);
+        const curr = req;
         totalReqCap += req;
         totalPeakCap += peak;
         totalExitCap += curr;

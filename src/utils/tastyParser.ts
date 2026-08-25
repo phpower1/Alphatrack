@@ -862,7 +862,7 @@ export function groupItemsByTastyStrategy<T extends {
         totalQty += signedQty;
         totalVal += (item.totalValue || 0);
         totalPnl += (item.openPnl || 0);
-        totalReqCap += (item.requiredCapital || 0);
+        totalReqCap += (item.requiredCapital || (item as any).capReq || (item.totalValue && item.quantity > 0 ? item.totalValue : 0));
         netCost += (item.averagePrice || item.price || 0) * signedQty * itemMult;
         netCurr += (item.currentPrice || item.price || 0) * signedQty * itemMult;
 

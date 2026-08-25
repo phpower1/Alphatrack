@@ -3,7 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>Alphatrack</title>
+    <script>
+      // Automatically unregister any stale service workers from previous projects or deployments on localhost
+      if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for (let registration of registrations) {
+            registration.unregister();
+          }
+        }).catch(function() {});
+      }
+    </script>
   </head>
   <body style="background-color: #0d0e12; color: #f8fafc; margin: 0; min-height: 100vh;">
     <div id="root"></div>

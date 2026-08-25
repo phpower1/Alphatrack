@@ -321,6 +321,8 @@ const MOCK_ACTIVITIES: Record<string, any[]> = {
       price: 96.50,
       amount: -193.00,
       fee: 1.25,
+      required_capital: 193.00,
+      cap_req: 193.00,
       description: "BOT +1 /MNQU6 Sep 18 26100 Put @ 96.50"
     },
     {
@@ -334,6 +336,8 @@ const MOCK_ACTIVITIES: Record<string, any[]> = {
       price: 81.00,
       amount: 324.00,
       fee: 2.50,
+      required_capital: 1160.38,
+      cap_req: 1160.38,
       description: "SLD -2 /MNQU6 Sep 18 25800 Put @ 81.00"
     },
     // /MESU6 Futures Option - Sep 18 Expiration
@@ -348,6 +352,8 @@ const MOCK_ACTIVITIES: Record<string, any[]> = {
       price: 23.75,
       amount: 118.75,
       fee: 1.25,
+      required_capital: 900.55,
+      cap_req: 900.55,
       description: "SLD -1 /MESU6 Sep 18 7050 Put @ 23.75"
     },
     // Historical closed NVDA & TSLA trades
@@ -466,26 +472,35 @@ const MOCK_POSITIONS: Record<string, any[]> = {
       symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P25800", description: "/MNQU6 Sep 18 25800 Put" },
       option_symbol: { ticker: "260918P25800", expiration_date: "2026-09-18", strike_price: "25800", option_type: "PUT" },
       units: -2,
-      price: 14.39,
+      price: 18.79,
       average_purchase_price: 81.00,
-      open_pnl: 53.39
+      cost_basis: 324.00,
+      open_pnl: 125.79,
+      cap_req: 1160.38,
+      required_capital: 1160.38
     },
     {
       symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P26100", description: "/MNQU6 Sep 18 26100 Put" },
       option_symbol: { ticker: "260918P26100", expiration_date: "2026-09-18", strike_price: "26100", option_type: "PUT" },
       units: 1,
-      price: 8.90,
+      price: 58.90,
       average_purchase_price: 96.50,
-      open_pnl: -34.40
+      cost_basis: -193.00,
+      open_pnl: -75.44,
+      cap_req: 0,
+      required_capital: 193.00
     },
     // /MESU6 Sep 18 Futures Option
     {
       symbol: { symbol: "/MESU6", raw_symbol: "/MESU6 260918P7050", description: "/MESU6 Sep 18 7050 Put" },
       option_symbol: { ticker: "260918P7050", expiration_date: "2026-09-18", strike_price: "7050", option_type: "PUT" },
       units: -1,
-      price: 2.25,
+      price: 8.25,
       average_purchase_price: 23.75,
-      open_pnl: 39.75
+      cost_basis: 118.75,
+      open_pnl: 60.75,
+      cap_req: 900.55,
+      required_capital: 900.55
     }
   ],
   "mock-acc-rh-02": [
@@ -591,6 +606,14 @@ async function startServer() {
 
   app.use(cors());
   app.use(express.json());
+
+  // Prevent caching on all API endpoints so refresh always returns real-time data
+  app.use("/api", (req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    next();
+  });
 
   // 1. Health check
   app.get("/api/health", (req, res) => {
@@ -1262,6 +1285,19 @@ async function startServer() {
         const costBasis = parseFloat(p["cost-basis"] || p.cost_basis || "0");
         const realizedDayGain = parseFloat(p["realized-day-gain"] || p.realized_day_gain || "0");
         const extrinsicValue = parseFloat(p["extrinsic-value"] || p.extrinsic_value || "0");
+        const capReq = parseFloat(
+          p["margin-requirement"] ||
+          p.margin_requirement ||
+          p["buying-power-requirement"] ||
+          p.buying_power_requirement ||
+          p["cap-req"] ||
+          p.cap_req ||
+          p["capital-requirement"] ||
+          p.capital_requirement ||
+          p["maintenance-requirement"] ||
+          p.maintenance_requirement ||
+          "0"
+        );
 
         // Calculate exact open PnL based on position direction
         let openPnl = 0;
@@ -1291,6 +1327,8 @@ async function startServer() {
           extrinsic_value: extrinsicValue,
           realized_day_gain: realizedDayGain,
           open_pnl: openPnl,
+          cap_req: capReq > 0 ? capReq : undefined,
+          required_capital: capReq > 0 ? capReq : undefined,
           raw: p
         };
       });
@@ -1401,10 +1439,50 @@ async function startServer() {
       appType: "spa",
     });
     app.use(vite.middlewares);
+
+    // Development SPA HTML fallback with transformIndexHtml
+    app.use("*", async (req, res, next) => {
+      if (req.originalUrl.startsWith("/api")) {
+        return next();
+      }
+      try {
+        const url = req.originalUrl;
+        const indexPath = path.resolve(process.cwd(), "index.html");
+        let template = fs.readFileSync(indexPath, "utf-8");
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({
+          "Content-Type": "text/html",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          "Pragma": "no-cache",
+          "Expires": "0",
+        }).end(template);
+      } catch (e) {
+        vite.ssrFixStacktrace(e as Error);
+        next(e);
+      }
+    });
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(distPath, {
+      index: false,
+      maxAge: "1d",
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith(".html")) {
+          res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+          res.setHeader("Pragma", "no-cache");
+          res.setHeader("Expires", "0");
+        }
+      }
+    }));
     app.get('*', (req, res) => {
+      if (req.originalUrl.startsWith("/api")) {
+        return res.status(404).json({ error: "API endpoint not found" });
+      }
+      res.set({
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+      });
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
