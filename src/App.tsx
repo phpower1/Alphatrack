@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { differenceInDays, parseISO } from 'date-fns';
+import { differenceInDays, parseISO, subDays } from 'date-fns';
 import { 
   LogIn, 
   Activity, 
@@ -128,6 +128,11 @@ interface Position {
   openPnl: number;
   multiplier?: number;
   details?: ParsedOptionDetails;
+  date?: string;
+  createdDate?: string;
+  costBasis?: number;
+  extrinsicValue?: number;
+  realizedDayGain?: number;
 }
 
 interface BrokerageConnection {
@@ -582,6 +587,28 @@ export default function App() {
               const rawAvg = parseFloat(p.average_purchase_price || p.cost_basis || p.average_price || (currentPrice || '0'));
               const avgPrice = isNaN(rawAvg) ? (currentPrice || 0) : rawAvg;
 
+              // Find matching opening trade date from accountTrades or allTrades
+              const pRoot = (details.rootSymbol || sym).toUpperCase().replace('/', '');
+              const pExp = details.expirationDate;
+              const pStrike = details.strike;
+              const pType = details.optionTypeShort;
+
+              const matchingTrade = accountTrades.find(t => {
+                const tRoot = (t.details?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
+                const sameRoot = tRoot === pRoot || tRoot.includes(pRoot) || pRoot.includes(tRoot);
+                if (!sameRoot) return false;
+                if (pExp && t.details?.expirationDate && t.details.expirationDate !== pExp) return false;
+                if (pStrike !== undefined && t.details?.strike !== undefined && Math.abs(t.details.strike - pStrike) > 0.1) return false;
+                if (pType && t.details?.optionTypeShort && t.details.optionTypeShort !== pType) return false;
+                return true;
+              });
+
+              let entryDate = matchingTrade?.date || p.created_at || p['created-at'] || p.trade_date || p.date;
+              if (!entryDate && details.dte !== undefined && details.daysLeft !== undefined && details.dte > details.daysLeft) {
+                const daysAgo = details.dte - details.daysLeft;
+                entryDate = subDays(new Date(), daysAgo).toISOString();
+              }
+
               let openPnl = 0;
               if (p.open_pnl !== undefined && p.open_pnl !== null && !isNaN(parseFloat(p.open_pnl))) {
                 openPnl = parseFloat(p.open_pnl);
@@ -609,7 +636,9 @@ export default function App() {
                 totalValue: totalValue,
                 openPnl: openPnl,
                 multiplier: multiplier,
-                details: details
+                details: details,
+                date: entryDate,
+                createdDate: entryDate
               };
             });
 
@@ -699,6 +728,28 @@ export default function App() {
                 const totalValue = p.total_value;
                 const openPnl = p.open_pnl;
 
+                // Find matching trade date from allTrades
+                const pRoot = (details.rootSymbol || sym).toUpperCase().replace('/', '');
+                const pExp = details.expirationDate;
+                const pStrike = details.strike;
+                const pType = details.optionTypeShort;
+
+                const matchingTrade = (allTrades || []).find(t => {
+                  const tRoot = (t.details?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
+                  const sameRoot = tRoot === pRoot || tRoot.includes(pRoot) || pRoot.includes(tRoot);
+                  if (!sameRoot) return false;
+                  if (pExp && t.details?.expirationDate && t.details.expirationDate !== pExp) return false;
+                  if (pStrike !== undefined && t.details?.strike !== undefined && Math.abs(t.details.strike - pStrike) > 0.1) return false;
+                  if (pType && t.details?.optionTypeShort && t.details.optionTypeShort !== pType) return false;
+                  return true;
+                });
+
+                let entryDate = matchingTrade?.date || p.created_at || p['created-at'] || p.opened_at;
+                if (!entryDate && details.dte !== undefined && details.daysLeft !== undefined && details.dte > details.daysLeft) {
+                  const daysAgo = details.dte - details.daysLeft;
+                  entryDate = subDays(new Date(), daysAgo).toISOString();
+                }
+
                 return {
                   id: `tasty-${acc.number}-pos-${idx}`,
                   accountId: acc.id,
@@ -713,7 +764,9 @@ export default function App() {
                   extrinsicValue: p.extrinsic_value,
                   realizedDayGain: p.realized_day_gain,
                   details: details,
-                  multiplier: multiplier
+                  multiplier: multiplier,
+                  date: entryDate,
+                  createdDate: entryDate
                 };
               });
 
@@ -933,7 +986,7 @@ export default function App() {
     };
   }, [accounts, selectedAccountId, filteredPositions, filteredTrades]);
 
-  // ROI Calculator - supports both Closed trades and Open positions
+  // ROI Calculator - supports both Closed trades and Open positions with Lifecycle-Weighted Average Capital
   const calculateROI = (trade: Trade) => {
     if (!trade) return null;
 
@@ -947,6 +1000,7 @@ export default function App() {
 
     let profit = 0;
     let daysHeld = 1;
+    let exitCap = reqCap;
 
     if (trade.status === 'Closed') {
       const closePrice = trade.closePrice !== null && trade.closePrice !== undefined ? trade.closePrice : entryPrice;
@@ -954,6 +1008,9 @@ export default function App() {
         ? (closePrice - entryPrice) * quantity * multiplier
         : (entryPrice - closePrice) * quantity * multiplier;
       
+      // Exit capital for closed option / trade
+      exitCap = Math.abs(closePrice * quantity * multiplier);
+
       let days = 1;
       // 1. If trade has closeDate and date, and closeDate != date:
       if (trade.closeDate && trade.date && trade.closeDate !== trade.date) {
@@ -1008,6 +1065,13 @@ export default function App() {
           : entryPrice * 0.05 * quantity * multiplier;
       }
 
+      // Current capital mark for open position
+      if (matchingPos && matchingPos.totalValue !== undefined && matchingPos.totalValue > 0) {
+        exitCap = matchingPos.totalValue;
+      } else {
+        exitCap = Math.abs((matchingPos?.currentPrice || entryPrice) * quantity * multiplier);
+      }
+
       let days = 1;
       try {
         if (trade.date) {
@@ -1025,12 +1089,18 @@ export default function App() {
       daysHeld = Math.max(1, days);
     }
 
-    const avgROI = reqCap > 0 ? (profit / reqCap) * 100 : 0;
+    // Option A: Lifecycle-Weighted Average Capital = (Entry Capital + Peak Capital + Exit/Current Capital) / 3
+    const avgCapital = Math.max(1, (reqCap + peakCap + exitCap) / 3);
+    const avgROI = avgCapital > 0 ? (profit / avgCapital) * 100 : 0;
     const peakROI = peakCap > 0 ? (profit / peakCap) * 100 : 0;
     const annualizedROI = avgROI * (365 / Math.max(1, daysHeld));
 
     return { 
       profit: isNaN(profit) ? 0 : profit, 
+      reqCap: isNaN(reqCap) ? 1 : reqCap,
+      peakCap: isNaN(peakCap) ? 1 : peakCap,
+      exitCap: isNaN(exitCap) ? 1 : exitCap,
+      avgCapital: isNaN(avgCapital) ? reqCap : avgCapital,
       avgROI: isNaN(avgROI) ? 0 : avgROI, 
       peakROI: isNaN(peakROI) ? 0 : peakROI, 
       annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI, 
@@ -1048,12 +1118,29 @@ export default function App() {
     const foundPos = (positions || []).find(p => p.id === activeTradeId);
     if (foundPos) {
       // Find matching opening trade date if available
-      const matchingTrade = (trades || []).find(t => 
-        t.symbol === foundPos.symbol && 
-        t.details?.strike === foundPos.details?.strike &&
-        t.details?.expirationDate === foundPos.details?.expirationDate
-      );
-      const tradeDate = matchingTrade?.date || (foundPos as any).createdDate || new Date().toISOString();
+      const pRoot = (foundPos.details?.rootSymbol || foundPos.symbol || '').toUpperCase().replace('/', '');
+      const pExp = foundPos.details?.expirationDate;
+      const pStrike = foundPos.details?.strike;
+      const pType = foundPos.details?.optionTypeShort;
+
+      const matchingTrade = (trades || []).find(t => {
+        const tRoot = (t.details?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
+        const sameRoot = tRoot === pRoot || tRoot.includes(pRoot) || pRoot.includes(tRoot);
+        if (!sameRoot) return false;
+        if (pExp && t.details?.expirationDate && t.details.expirationDate !== pExp) return false;
+        if (pStrike !== undefined && t.details?.strike !== undefined && Math.abs(t.details.strike - pStrike) > 0.1) return false;
+        if (pType && t.details?.optionTypeShort && t.details.optionTypeShort !== pType) return false;
+        return true;
+      });
+
+      let tradeDate = matchingTrade?.date || foundPos.date || (foundPos as any).createdDate;
+      if (!tradeDate && foundPos.details?.dte !== undefined && foundPos.details?.daysLeft !== undefined && foundPos.details.dte > foundPos.details.daysLeft) {
+        const daysAgo = foundPos.details.dte - foundPos.details.daysLeft;
+        tradeDate = subDays(new Date(), daysAgo).toISOString();
+      }
+      if (!tradeDate) {
+        tradeDate = new Date().toISOString();
+      }
 
       return {
         id: foundPos.id,
@@ -1100,11 +1187,12 @@ export default function App() {
 
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
-  // Whole Strategy Metrics Aggregator
+  // Whole Strategy Metrics Aggregator (Lifecycle-Weighted Option A)
   const strategyMetrics = useMemo(() => {
     if (!activeStrategy) return null;
     let totalReqCap = 0;
     let totalPeakCap = 0;
+    let totalExitCap = 0;
     let totalNetProfit = 0;
     let maxDaysHeld = 1;
     let hasOpenLeg = false;
@@ -1115,8 +1203,30 @@ export default function App() {
       const isPosItem = 'openPnl' in item;
       const isTradeItem = 'status' in item;
 
-      if (item.date) {
-        const t = new Date(item.date).getTime();
+      let itemDate = item.date || item.createdDate;
+      if (!itemDate && isPosItem) {
+        const pRoot = (item.details?.rootSymbol || item.symbol || '').toUpperCase().replace('/', '');
+        const pExp = item.details?.expirationDate;
+        const pStrike = item.details?.strike;
+        const pType = item.details?.optionTypeShort;
+
+        const matchingTrade = (trades || []).find(t => {
+          const tRoot = (t.details?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
+          const sameRoot = tRoot === pRoot || tRoot.includes(pRoot) || pRoot.includes(tRoot);
+          if (!sameRoot) return false;
+          if (pExp && t.details?.expirationDate && t.details.expirationDate !== pExp) return false;
+          if (pStrike !== undefined && t.details?.strike !== undefined && Math.abs(t.details.strike - pStrike) > 0.1) return false;
+          if (pType && t.details?.optionTypeShort && t.details.optionTypeShort !== pType) return false;
+          return true;
+        });
+        if (matchingTrade?.date) itemDate = matchingTrade.date;
+      }
+      if (!itemDate && item.details?.dte !== undefined && item.details?.daysLeft !== undefined && item.details.dte > item.details.daysLeft) {
+        itemDate = subDays(new Date(), item.details.dte - item.details.daysLeft).toISOString();
+      }
+
+      if (itemDate) {
+        const t = new Date(itemDate).getTime();
         if (!isNaN(t)) itemDates.push(t);
       }
       if (item.closeDate) {
@@ -1132,17 +1242,26 @@ export default function App() {
         const qty = Math.abs(item.quantity || 1);
         const mult = item.details?.multiplier || 1;
         const req = (item.totalValue && item.totalValue > 0) ? item.totalValue : (itemPrice * qty * mult);
+        const peak = req * 1.15;
+        const curr = item.totalValue || (Math.abs(item.currentPrice || itemPrice) * qty * mult);
         totalReqCap += req;
-        totalPeakCap += req * 1.15;
+        totalPeakCap += peak;
+        totalExitCap += curr;
       } else if (isTradeItem) {
         if (item.status === 'Open') hasOpenLeg = true;
         const legRoi = calculateROI(item as Trade);
         if (legRoi) {
           totalNetProfit += legRoi.profit;
           maxDaysHeld = Math.max(maxDaysHeld, legRoi.daysHeld);
+          totalReqCap += legRoi.reqCap;
+          totalPeakCap += legRoi.peakCap;
+          totalExitCap += legRoi.exitCap;
+        } else {
+          const req = item.requiredCapital || 0;
+          totalReqCap += req;
+          totalPeakCap += item.peakCapital || (req * 1.15);
+          totalExitCap += req;
         }
-        totalReqCap += item.requiredCapital || 0;
-        totalPeakCap += item.peakCapital || ((item.requiredCapital || 0) * 1.15);
         totalMarketVal += item.requiredCapital || 0;
       }
     }
@@ -1188,8 +1307,10 @@ export default function App() {
 
     if (totalReqCap <= 0) totalReqCap = Math.abs(activeStrategy.netCostBasis) || 1;
     if (totalPeakCap <= 0) totalPeakCap = totalReqCap * 1.15;
+    if (totalExitCap <= 0) totalExitCap = totalReqCap;
 
-    const avgROI = totalReqCap > 0 ? (totalNetProfit / totalReqCap) * 100 : 0;
+    const totalAvgCapital = Math.max(1, (totalReqCap + totalPeakCap + totalExitCap) / 3);
+    const avgROI = totalAvgCapital > 0 ? (totalNetProfit / totalAvgCapital) * 100 : 0;
     const peakROI = totalPeakCap > 0 ? (totalNetProfit / totalPeakCap) * 100 : 0;
     const annualizedROI = avgROI * (365 / Math.max(1, stratDaysHeld));
 
@@ -1200,6 +1321,8 @@ export default function App() {
       isOpen: hasOpenLeg,
       totalRequiredCapital: totalReqCap,
       totalPeakCapital: totalPeakCap,
+      totalExitCapital: totalExitCap,
+      totalAvgCapital: totalAvgCapital,
       netProfit: totalNetProfit,
       avgROI: isNaN(avgROI) ? 0 : avgROI,
       peakROI: isNaN(peakROI) ? 0 : peakROI,
@@ -1209,7 +1332,7 @@ export default function App() {
       netCostBasis: activeStrategy.netCostBasis,
       netCurrentPrice: activeStrategy.netCurrentPrice
     };
-  }, [activeStrategy, calculateROI]);
+  }, [activeStrategy, calculateROI, trades]);
 
   const handleGoogleLogin = async () => {
     setAuthError(null);
@@ -2557,12 +2680,16 @@ export default function App() {
                               <span className="text-slate-200">${Math.abs(strategyMetrics.netCurrentPrice).toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Total Required Capital:</span>
+                              <span className="text-slate-400 font-sans">Initial Entry Capital:</span>
                               <span className="text-slate-200">${strategyMetrics.totalRequiredCapital.toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
                               <span className="text-slate-200">${strategyMetrics.totalPeakCapital.toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-indigo-300 font-semibold">
+                              <span className="text-slate-400 font-sans">Average Capital Deployed:</span>
+                              <span>${strategyMetrics.totalAvgCapital.toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">{strategyMetrics.isOpen ? 'Strategy Unrealized P/L:' : 'Strategy Realized P/L:'}</span>
@@ -2596,12 +2723,16 @@ export default function App() {
                               <span className="text-slate-200">${(activeTrade.price || 0).toFixed(2)} × {activeTrade.quantity || 1}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Required Capital:</span>
+                              <span className="text-slate-400 font-sans">Required Capital at Open:</span>
                               <span className="text-slate-200">${(activeTrade.requiredCapital || 0).toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
                               <span className="text-slate-200">${(activeTrade.peakCapital || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between text-indigo-300 font-semibold">
+                              <span className="text-slate-400 font-sans">Average Capital Deployed:</span>
+                              <span>${(activeMetrics.avgCapital || activeTrade.requiredCapital || 0).toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Realized Gain/Loss:'}</span>
@@ -2628,9 +2759,9 @@ export default function App() {
                         </div>
                         <p className="text-slate-400 text-[11px] leading-relaxed">
                           {inspectorMode === 'strategy' && strategyMetrics && activeStrategy && activeStrategy.items.length > 1 ? (
-                            `Allocated $${strategyMetrics.totalRequiredCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} across ${strategyMetrics.legsCount} legs in ${activeStrategy.strategyName} structure. Peak exposure reached $${strategyMetrics.totalPeakCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, delivering an annualized yield of ${strategyMetrics.annualizedROI.toFixed(1)}%.`
+                            `Allocated an average of $${strategyMetrics.totalAvgCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} across ${strategyMetrics.legsCount} legs in ${activeStrategy.strategyName} structure over ${strategyMetrics.daysHeld} ${strategyMetrics.daysHeld === 1 ? 'day' : 'days'} (ranging from $${strategyMetrics.totalRequiredCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at open to a peak of $${strategyMetrics.totalPeakCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}), delivering an annualized yield of ${strategyMetrics.annualizedROI.toFixed(1)}%.`
                           ) : (
-                            `Allocated $${(activeTrade.requiredCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at open. Peak exposure reached $${(activeTrade.peakCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}, delivering an annualized yield of ${(activeMetrics.annualizedROI || 0).toFixed(1)}%.`
+                            `Allocated an average of $${(activeMetrics.avgCapital || activeTrade.requiredCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} over ${activeMetrics.daysHeld || 1} ${(activeMetrics.daysHeld || 1) === 1 ? 'day' : 'days'} (ranging from $${(activeTrade.requiredCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at open to a peak of $${(activeTrade.peakCapital || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}), delivering an annualized yield of ${(activeMetrics.annualizedROI || 0).toFixed(1)}%.`
                           )}
                         </p>
                       </div>
