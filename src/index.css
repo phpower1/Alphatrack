@@ -120,3 +120,25 @@
     @apply font-sans h-full;
   }
 }
+
+/* Custom sleek dark scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #111218;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #282b37;
+  border-radius: 9999px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #3e4354;
+}
+
+/* Firefox scrollbar support */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #282b37 #111218;
+}

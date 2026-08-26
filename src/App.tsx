@@ -1097,7 +1097,11 @@ export default function App() {
         : (entryPrice - closePrice) * quantity * multiplier;
       
       // Exit capital for closed option / trade
-      exitCap = Math.abs(closePrice * quantity * multiplier);
+      if (trade.details?.isOption || trade.symbol.startsWith('/') || (trade.requiredCapital && trade.requiredCapital > 0)) {
+        exitCap = reqCap;
+      } else {
+        exitCap = Math.abs(closePrice * quantity * multiplier);
+      }
 
       let days = 1;
       // 1. If trade has closeDate and date, and closeDate != date:
@@ -1153,11 +1157,13 @@ export default function App() {
           : entryPrice * 0.05 * quantity * multiplier;
       }
 
-      // Current capital mark for open position
-      if (matchingPos && matchingPos.totalValue !== undefined && matchingPos.totalValue > 0) {
-        exitCap = matchingPos.totalValue;
+      // Current capital mark for open position (margin requirement / required capital deployed today)
+      if (matchingPos && matchingPos.requiredCapital !== undefined && matchingPos.requiredCapital > 0) {
+        exitCap = matchingPos.requiredCapital;
+      } else if (matchingPos && matchingPos.capReq !== undefined && matchingPos.capReq > 0) {
+        exitCap = matchingPos.capReq;
       } else {
-        exitCap = Math.abs((matchingPos?.currentPrice || entryPrice) * quantity * multiplier);
+        exitCap = reqCap;
       }
 
       let days = 1;
@@ -1514,9 +1520,9 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col font-sans bg-[#0d0e12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white">
+    <div className="h-screen flex flex-col font-sans bg-[#0d0e12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white overflow-hidden">
       {/* Top Navigation Bar */}
-      <header className="h-16 px-6 lg:px-8 flex items-center justify-between border-b border-slate-800/80 bg-[#111218]/90 backdrop-blur sticky top-0 z-50">
+      <header className="h-16 px-6 lg:px-8 flex items-center justify-between border-b border-slate-800/80 bg-[#111218]/90 backdrop-blur shrink-0 z-50">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
@@ -1724,9 +1730,9 @@ export default function App() {
           )}
         </main>
       ) : (
-        <main className="flex-1 flex flex-col p-6 max-w-[1600px] w-full mx-auto gap-6 min-h-0">
+        <main className="flex-1 flex flex-col p-4 lg:p-6 max-w-[1700px] w-full mx-auto gap-4 lg:gap-6 min-h-0 overflow-hidden">
           {/* Top Metric Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 shrink-0">
             <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
               <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
                 <span>Portfolio Net Liq</span>
@@ -1775,11 +1781,11 @@ export default function App() {
           </div>
 
           {/* Main Grid: Data Table + Trade Inspector Sidebar */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] gap-6 flex-1 min-h-0">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_400px] gap-4 lg:gap-6 flex-1 min-h-0 overflow-hidden">
             {/* Left Content Table */}
-            <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl flex flex-col min-h-0 overflow-hidden shadow-sm">
+            <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl flex flex-col min-h-0 h-full overflow-hidden shadow-sm">
               {/* Header Controls */}
-              <div className="p-4 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 bg-[#111218]">
+              <div className="p-4 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 bg-[#111218] shrink-0">
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setActiveTab('trades')}
@@ -1845,7 +1851,7 @@ export default function App() {
               </div>
 
               {/* Table Body */}
-              <div className="flex-1 overflow-auto">
+              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto custom-scrollbar">
                 {activeTab === 'trades' ? (
                   groupBy === 'strategy' ? (
                     <table className="w-full border-collapse text-left">
@@ -2520,8 +2526,8 @@ export default function App() {
             </div>
 
             {/* Right Sidebar: Detailed Trade Inspector */}
-            <aside className="flex flex-col gap-6">
-              <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex-1 flex flex-col justify-between">
+            <aside className="flex flex-col min-h-0 h-full overflow-hidden">
+              <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex-1 flex flex-col min-h-0 overflow-y-auto custom-scrollbar">
                 <div>
                   <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-5">
                     <span className="text-sm font-bold text-white">Trade & Strategy Inspector</span>
