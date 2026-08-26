@@ -1310,9 +1310,9 @@ export default function App() {
 
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
-  // Whole Strategy Metrics Aggregator (Lifecycle-Weighted Option A)
-  const strategyMetrics = useMemo(() => {
-    if (!activeStrategy) return null;
+  // Strategy Metrics Calculator (Lifecycle-Weighted Option A) - Shared between Table & Inspector
+  const calculateStrategyMetrics = useCallback((strategy: StrategyGroup<any> | null) => {
+    if (!strategy) return null;
     let totalReqCap = 0;
     let totalPeakCap = 0;
     let totalExitCap = 0;
@@ -1325,9 +1325,9 @@ export default function App() {
     let totalMarketVal = 0;
     const itemDates: number[] = [];
 
-    const isTradeGroup = (activeStrategy.items as any[]).some(i => 'status' in i || i.date);
+    const isTradeGroup = (strategy.items as any[]).some(i => 'status' in i || i.date);
 
-    for (const item of activeStrategy.items as any[]) {
+    for (const item of strategy.items as any[]) {
       const isPosItem = 'openPnl' in item;
       const isTradeItem = 'status' in item;
 
@@ -1423,7 +1423,7 @@ export default function App() {
       }
     }
 
-    // Compute strategy-level holding days across all legs in activeStrategy
+    // Compute strategy-level holding days across all legs in strategy
     let stratDaysHeld = 1;
     if (itemDates.length > 1) {
       const minDate = Math.min(...itemDates);
@@ -1447,22 +1447,22 @@ export default function App() {
     if (stratDaysHeld === 1) {
       if (maxDaysHeld > 1) {
         stratDaysHeld = maxDaysHeld;
-      } else if (activeStrategy.expirationDate && itemDates.length > 0) {
+      } else if (strategy.expirationDate && itemDates.length > 0) {
         try {
-          const expT = parseISO(activeStrategy.expirationDate).getTime();
+          const expT = parseISO(strategy.expirationDate).getTime();
           const minDate = Math.min(...itemDates);
           const spanExp = differenceInDays(new Date(expT), new Date(minDate));
           if (!isNaN(spanExp) && spanExp > 0) {
             stratDaysHeld = spanExp;
           }
         } catch {}
-      } else if (activeStrategy.dte !== undefined && activeStrategy.daysLeft !== undefined) {
-        const spanDte = activeStrategy.dte - activeStrategy.daysLeft;
+      } else if (strategy.dte !== undefined && strategy.daysLeft !== undefined) {
+        const spanDte = strategy.dte - strategy.daysLeft;
         if (spanDte > 0) stratDaysHeld = spanDte;
       }
     }
 
-    if (totalReqCap <= 0) totalReqCap = Math.abs(activeStrategy.netCostBasis) || 1;
+    if (totalReqCap <= 0) totalReqCap = Math.abs(strategy.netCostBasis) || 1;
     if (totalPeakCap <= 0) totalPeakCap = totalReqCap * 1.15;
     if (totalExitCap <= 0) totalExitCap = totalReqCap;
 
@@ -1472,9 +1472,9 @@ export default function App() {
     const annualizedROI = avgROI * (365 / Math.max(1, stratDaysHeld));
 
     return {
-      strategyName: activeStrategy.strategyName,
-      strategyType: activeStrategy.strategyType,
-      legsCount: activeStrategy.items.length,
+      strategyName: strategy.strategyName,
+      strategyType: strategy.strategyType,
+      legsCount: strategy.items.length,
       isOpen: hasOpenLeg,
       totalRequiredCapital: totalReqCap,
       totalPeakCapital: totalPeakCap,
@@ -1489,10 +1489,14 @@ export default function App() {
       annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI,
       daysHeld: stratDaysHeld,
       totalValue: totalMarketVal,
-      netCostBasis: activeStrategy.netCostBasis,
-      netCurrentPrice: activeStrategy.netCurrentPrice
+      netCostBasis: strategy.netCostBasis,
+      netCurrentPrice: strategy.netCurrentPrice
     };
-  }, [activeStrategy, calculateROI, trades]);
+  }, [trades, calculateROI]);
+
+  const strategyMetrics = useMemo(() => {
+    return calculateStrategyMetrics(activeStrategy);
+  }, [activeStrategy, calculateStrategyMetrics]);
 
   const handleGoogleLogin = async () => {
     setAuthError(null);
@@ -1981,7 +1985,11 @@ export default function App() {
                                 {/* Strategies & Legs */}
                                 {!isUCollapsed && uGroup.strategies.map((strat) => {
                                   const isStratCollapsed = collapsedStrategies[strat.id];
-                                  const stratROI = strat.totalRequiredCapital > 0 ? (strat.totalRealizedProfit / strat.totalRequiredCapital) * 100 : 0;
+                                  const stratMetrics = calculateStrategyMetrics(strat);
+                                  const stratProfit = stratMetrics ? stratMetrics.netProfit : strat.totalRealizedProfit;
+                                  const stratAvgROI = stratMetrics ? stratMetrics.avgROI : 0;
+                                  const stratPeakROI = stratMetrics ? stratMetrics.peakROI : 0;
+                                  const stratAnnROI = stratMetrics ? stratMetrics.annualizedROI : 0;
                                   return (
                                     <React.Fragment key={`strat-t-${strat.id}`}>
                                       <tr
@@ -2022,17 +2030,17 @@ export default function App() {
                                         <td className="p-2.5 text-slate-400 text-xs font-sans">
                                           {strat.expirationFormatted || '-'}
                                         </td>
-                                        <td className={`p-2.5 font-bold font-mono ${strat.totalRealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                          {strat.totalRealizedProfit >= 0 ? '+' : ''}${strat.totalRealizedProfit.toFixed(2)}
+                                        <td className={`p-2.5 font-bold font-mono ${stratProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                          {stratProfit >= 0 ? '+' : ''}${stratProfit.toFixed(2)}
                                         </td>
                                         <td className="p-2.5 text-slate-300 font-mono">
-                                          {stratROI.toFixed(1)}%
+                                          {stratAvgROI >= 0 ? '+' : ''}{stratAvgROI.toFixed(1)}%
                                         </td>
                                         <td className="p-2.5 text-slate-300 font-mono">
-                                          {(stratROI * 0.85).toFixed(1)}%
+                                          {stratPeakROI >= 0 ? '+' : ''}{stratPeakROI.toFixed(1)}%
                                         </td>
                                         <td className="p-2.5 text-indigo-300 font-semibold font-mono">
-                                          {(stratROI * 12).toFixed(1)}%
+                                          {stratAnnROI.toFixed(1)}%
                                         </td>
                                       </tr>
 
