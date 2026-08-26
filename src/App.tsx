@@ -25,7 +25,8 @@ import {
   ChevronRight,
   FolderTree,
   ListFilter,
-  Check
+  Check,
+  User as UserIcon
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -198,6 +199,24 @@ export default function App() {
 
   const [inspectorMode, setInspectorMode] = useState<'strategy' | 'leg'>('strategy');
   const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
+
+  // User Configuration Menu Dropdown State
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const userMenuRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    };
+    if (userMenuOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [userMenuOpen]);
 
   // Tastytrade Direct Connection State
   const [tastyConnected, setTastyConnected] = useState(false);
@@ -1586,15 +1605,10 @@ export default function App() {
       <header className="h-16 px-6 lg:px-8 flex items-center justify-between border-b border-slate-800/80 bg-[#111218]/90 backdrop-blur shrink-0 z-50">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center shadow-sm">
               <TrendingUp className="w-4 h-4 text-indigo-400" />
             </div>
             <span className="font-extrabold tracking-tight text-lg text-white">ALPHATRACK</span>
-          </div>
-
-          <div className="hidden sm:flex items-center gap-2 bg-slate-800/60 border border-slate-700/50 rounded-full px-3 py-1 text-xs font-mono text-slate-300">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span>SnapTrade Connected</span>
           </div>
 
           {connections.some(c => c.disabled) && (
@@ -1617,10 +1631,10 @@ export default function App() {
         <div className="flex items-center gap-3">
           {/* Account Selector */}
           {accounts.length > 0 && (
-            <div className="relative">
+            <div className="relative flex items-center">
               <select
                 aria-label="Select Brokerage Account"
-                className="bg-[#181a22] border border-slate-700/80 hover:border-slate-600 text-slate-200 px-3.5 py-1.5 rounded-lg text-xs font-medium cursor-pointer outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all pr-8 appearance-none"
+                className="bg-[#181a22] border border-slate-700/80 hover:border-slate-600 text-slate-200 pl-3.5 pr-8 py-1.5 rounded-xl text-xs font-medium cursor-pointer outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all appearance-none shadow-sm"
                 value={selectedAccountId}
                 onChange={(e) => setSelectedAccountId(e.target.value)}
               >
@@ -1631,72 +1645,209 @@ export default function App() {
                   </option>
                 ))}
               </select>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 pointer-events-none" />
             </div>
           )}
 
-          {/* Tastytrade Direct Connect Button / Status Badge */}
-          <Button
-            onClick={() => setTastyDialogOpen(true)}
-            className={`text-xs font-semibold px-3 py-1.5 h-8 rounded-lg flex items-center gap-1.5 shadow-sm transition-all cursor-pointer ${
-              tastyConnected
-                ? 'bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30'
-                : 'bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white'
-            }`}
-            title="Connect directly to Tastytrade REST API for live futures options & mark quotes"
-          >
-            <span className="text-sm leading-none">🍒</span>
-            <span>{tastyConnected ? 'Tastytrade Live' : 'Connect Tastytrade'}</span>
-            {tastyConnected && <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse ml-0.5" />}
-          </Button>
+          {/* User Configuration & Profile Dropdown Menu */}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              onClick={() => setUserMenuOpen(prev => !prev)}
+              className={`flex items-center gap-2.5 px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
+                userMenuOpen 
+                  ? 'bg-slate-800/90 border-indigo-500/50 text-white shadow-lg shadow-indigo-500/10' 
+                  : 'bg-[#181a22] border-slate-700/80 hover:border-slate-600 text-slate-200 hover:bg-slate-800/80 shadow-sm'
+              }`}
+              title="User Configuration & Broker Settings"
+            >
+              {/* User Avatar / Initials */}
+              <div className="relative">
+                {user.photoURL ? (
+                  <img src={user.photoURL} alt="User Avatar" className="w-6 h-6 rounded-lg object-cover" />
+                ) : (
+                  <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-[11px] font-bold text-white shadow-inner">
+                    {user.email ? user.email[0].toUpperCase() : <UserIcon className="w-3.5 h-3.5" />}
+                  </div>
+                )}
+                {/* Status indicator dot */}
+                <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-[#111218] ${
+                  connections.some(c => c.disabled) 
+                    ? 'bg-amber-400 animate-pulse' 
+                    : tastyConnected 
+                      ? 'bg-emerald-400' 
+                      : 'bg-indigo-400'
+                }`} />
+              </div>
 
-          {/* Connect Other Brokerage Button */}
-          <Button
-            onClick={() => handleOpenConnectionPortal()}
-            variant="outline"
-            className="border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-3 py-1.5 h-8 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer"
-          >
-            <PlusCircle className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Other Brokers</span>
-          </Button>
+              <div className="flex flex-col items-start text-left leading-tight hidden sm:flex">
+                <span className="text-xs font-semibold text-white truncate max-w-[130px]">
+                  {user.displayName || user.email?.split('@')[0] || 'Trader'}
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
+                  {tastyConnected ? '🍒 Tasty Live' : `${connections.length || accounts.length} Broker(s)`}
+                </span>
+              </div>
 
-          {/* Refresh Data */}
-          <Button
-            onClick={handleRefresh}
-            disabled={refreshing}
-            variant="outline"
-            className="bg-[#181a22] border-slate-700/80 hover:bg-slate-800 text-slate-300 text-xs font-medium px-3 h-8 rounded-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50 transition-all"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
-            <span className="hidden md:inline">{refreshing ? 'Syncing...' : 'Sync'}</span>
-          </Button>
+              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${userMenuOpen ? 'rotate-180 text-indigo-400' : ''}`} />
+            </button>
 
-          {/* Manage Connections Modal Trigger */}
-          <Button
-            onClick={() => setConnectionsDialogOpen(true)}
-            variant="outline"
-            className={`border-slate-700/80 hover:bg-slate-800 text-xs font-medium px-2.5 h-8 rounded-lg flex items-center gap-1 cursor-pointer transition-all ${
-              connections.some(c => c.disabled) 
-                ? 'bg-amber-500/10 text-amber-300 border-amber-500/40' 
-                : 'bg-[#181a22] text-slate-300'
-            }`}
-            title="Manage Connected Brokerages"
-          >
-            <Building2 className="w-3.5 h-3.5" />
-            <span className="hidden lg:inline">Brokers ({connections.length || accounts.length})</span>
-            {connections.some(c => c.disabled) && (
-              <span className="w-2 h-2 rounded-full bg-amber-400 ml-0.5" />
+            {/* Dropdown Menu Popover */}
+            {userMenuOpen && (
+              <div className="absolute right-0 top-11 mt-2 w-80 bg-[#13141a] border border-slate-700/90 rounded-2xl shadow-2xl z-50 p-3 space-y-3 backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-150">
+                {/* User Info Header */}
+                <div className="flex items-center gap-3 p-2.5 bg-[#181a24] rounded-xl border border-slate-800/80">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt="User Avatar" className="w-10 h-10 rounded-xl object-cover" />
+                  ) : (
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-sm font-bold text-white shadow-md">
+                      {user.email ? user.email[0].toUpperCase() : <UserIcon className="w-5 h-5" />}
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="text-xs font-bold text-white truncate">
+                      {user.displayName || user.email?.split('@')[0] || 'Trading Account'}
+                    </div>
+                    <div className="text-[11px] text-slate-400 truncate">{user.email}</div>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                      <span className="text-[10px] text-emerald-400 font-medium">Firebase Authenticated</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Instant Sync Action */}
+                <div>
+                  <button
+                    onClick={() => {
+                      handleRefresh();
+                      setUserMenuOpen(false);
+                    }}
+                    disabled={refreshing}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group disabled:opacity-50"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 group-hover:text-indigo-300">
+                        <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-white">Sync Portfolio Data</div>
+                        <div className="text-[10px] text-slate-400">Update balances, trades & quotes</div>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] bg-slate-800 text-slate-300 border-slate-700">
+                      {refreshing ? 'Syncing...' : 'Sync'}
+                    </Badge>
+                  </button>
+                </div>
+
+                {/* Broker Integrations Section */}
+                <div className="space-y-1.5 pt-1">
+                  <div className="text-[10px] font-bold tracking-wider text-slate-400 uppercase px-1">
+                    Broker Integrations
+                  </div>
+
+                  {/* Tastytrade Direct API */}
+                  <button
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      setTastyDialogOpen(true);
+                    }}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-base">
+                        🍒
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-white flex items-center gap-1.5">
+                          <span>Tastytrade Direct API</span>
+                        </div>
+                        <div className="text-[10px] text-slate-400">
+                          {tastyConnected ? 'Real-time quotes & futures active' : 'Connect for real-time data'}
+                        </div>
+                      </div>
+                    </div>
+                    {tastyConnected ? (
+                      <Badge className="bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-semibold flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Live
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] bg-rose-500/10 text-rose-300 border-rose-500/30 font-semibold">
+                        Connect
+                      </Badge>
+                    )}
+                  </button>
+
+                  {/* Connected Brokerages Modal Trigger */}
+                  <button
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      setConnectionsDialogOpen(true);
+                    }}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 group-hover:text-indigo-300">
+                        <Building2 className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-white">Connected Brokerages</div>
+                        <div className="text-[10px] text-slate-400">
+                          {connections.length || accounts.length} linked broker account(s)
+                        </div>
+                      </div>
+                    </div>
+                    {connections.some(c => c.disabled) ? (
+                      <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-semibold">
+                        Re-auth
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-[10px] bg-slate-800 text-slate-300 border-slate-700 font-semibold">
+                        Manage ({connections.length || accounts.length})
+                      </Badge>
+                    )}
+                  </button>
+
+                  {/* Link Other Brokers (SnapTrade Portal) */}
+                  <button
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      handleOpenConnectionPortal();
+                    }}
+                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group"
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:text-purple-300">
+                        <PlusCircle className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-white">Link Other Brokers</div>
+                        <div className="text-[10px] text-slate-400">Robinhood, Schwab, Fidelity...</div>
+                      </div>
+                    </div>
+                    <Badge variant="outline" className="text-[10px] bg-indigo-500/10 text-indigo-300 border-indigo-500/30 font-semibold">
+                      + Link
+                    </Badge>
+                  </button>
+                </div>
+
+                {/* Sign Out Footer */}
+                <div className="pt-2 border-t border-slate-800/80">
+                  <button
+                    onClick={() => {
+                      setUserMenuOpen(false);
+                      logout();
+                    }}
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    <LogOut className="w-4 h-4" />
+                    <span>Sign Out</span>
+                  </button>
+                </div>
+              </div>
             )}
-          </Button>
-
-          {/* Sign Out */}
-          <Button
-            onClick={logout}
-            variant="ghost"
-            className="text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 text-xs font-medium px-2.5 h-8 rounded-lg cursor-pointer transition-all"
-            title={`Sign out (${user.email})`}
-          >
-            <LogOut className="w-3.5 h-3.5" />
-          </Button>
+          </div>
         </div>
       </header>
 
@@ -2612,9 +2763,6 @@ export default function App() {
                 <div>
                   <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-5">
                     <span className="text-sm font-bold text-white">Trade & Strategy Inspector</span>
-                    <Badge variant="outline" className="border-indigo-500/30 text-indigo-400 bg-indigo-500/10 text-[10px]">
-                      SNAPTRADE SYNC
-                    </Badge>
                   </div>
 
                   {activeTrade && activeMetrics ? (
