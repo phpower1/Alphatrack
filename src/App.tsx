@@ -114,6 +114,11 @@ interface Trade {
   peakCapital: number;
   description?: string;
   details?: ParsedOptionDetails;
+  fees?: number;
+  commission?: number;
+  otherFees?: number;
+  grossValue?: number;
+  netValue?: number;
 }
 
 interface Position {
@@ -568,10 +573,15 @@ export default function App() {
                 price: price,
                 date: tradeDate,
                 status: status,
-                closePrice: status === 'Closed' ? price * (isBuy ? 1.06 : 0.94) : null,
+                closePrice: null,
                 closeDate: status === 'Closed' ? tradeDate : null,
                 requiredCapital: reqCapital,
                 peakCapital: reqCapital * 1.15,
+                fees: details.fees || 0,
+                commission: details.commission || 0,
+                otherFees: details.otherFees || 0,
+                grossValue: details.grossValue,
+                netValue: details.netValue,
                 description: act.description || `${details.action} ${units} ${sym}`,
                 details: details
               };
@@ -896,10 +906,15 @@ export default function App() {
                   price: price,
                   date: tradeDate,
                   status: status,
-                  closePrice: status === 'Closed' ? price * (isBuy ? 1.06 : 0.94) : null,
+                  closePrice: null,
                   closeDate: status === 'Closed' ? tradeDate : null,
                   requiredCapital: reqCapital,
                   peakCapital: reqCapital * 1.15,
+                  fees: details.fees || 0,
+                  commission: details.commission || 0,
+                  otherFees: details.otherFees || 0,
+                  grossValue: details.grossValue,
+                  netValue: details.netValue,
                   description: tx.description || `${details.action} ${units} ${sym}`,
                   details: details
                 };
@@ -1091,16 +1106,27 @@ export default function App() {
     let exitCap = reqCap;
 
     if (trade.status === 'Closed') {
-      const closePrice = trade.closePrice !== null && trade.closePrice !== undefined ? trade.closePrice : entryPrice;
-      profit = trade.type === 'Buy'
-        ? (closePrice - entryPrice) * quantity * multiplier
-        : (entryPrice - closePrice) * quantity * multiplier;
+      const fees = trade.fees || trade.details?.fees || 0;
+      const isCredit = trade.details?.action === 'STO' || trade.details?.action === 'STC' || (trade.details?.actionType === 'Sell' && trade.details.action !== 'BTC');
+
+      if (trade.netValue !== undefined && trade.netValue !== 0) {
+        profit = trade.netValue;
+      } else if (trade.details?.netValue !== undefined && trade.details.netValue !== 0) {
+        profit = trade.details.netValue;
+      } else if (trade.closePrice !== null && trade.closePrice !== undefined && trade.closePrice !== entryPrice) {
+        profit = trade.type === 'Buy'
+          ? ((trade.closePrice - entryPrice) * quantity * multiplier) - fees
+          : ((entryPrice - trade.closePrice) * quantity * multiplier) - fees;
+      } else {
+        const gross = entryPrice * quantity * multiplier;
+        profit = isCredit ? (gross - fees) : (-gross - fees);
+      }
       
       // Exit capital for closed option / trade
       if (trade.details?.isOption || trade.symbol.startsWith('/') || (trade.requiredCapital && trade.requiredCapital > 0)) {
         exitCap = reqCap;
       } else {
-        exitCap = Math.abs(closePrice * quantity * multiplier);
+        exitCap = Math.abs(entryPrice * quantity * multiplier);
       }
 
       let days = 1;
@@ -1291,14 +1317,36 @@ export default function App() {
     let totalPeakCap = 0;
     let totalExitCap = 0;
     let totalNetProfit = 0;
+    let totalGrossCredit = 0;
+    let totalGrossDebit = 0;
+    let totalFees = 0;
     let maxDaysHeld = 1;
     let hasOpenLeg = false;
     let totalMarketVal = 0;
     const itemDates: number[] = [];
 
+    const isTradeGroup = (activeStrategy.items as any[]).some(i => 'status' in i || i.date);
+
     for (const item of activeStrategy.items as any[]) {
       const isPosItem = 'openPnl' in item;
       const isTradeItem = 'status' in item;
+
+      const itemFees = item.fees || item.details?.fees || 0;
+      totalFees += itemFees;
+
+      if (item.grossValue !== undefined) {
+        if (item.grossValue > 0) totalGrossCredit += item.grossValue;
+        else totalGrossDebit += item.grossValue;
+      } else if (item.details?.grossValue !== undefined) {
+        if (item.details.grossValue > 0) totalGrossCredit += item.details.grossValue;
+        else totalGrossDebit += item.details.grossValue;
+      } else {
+        const mult = item.details?.multiplier || 1;
+        const gross = (item.price || item.averagePrice || 0) * (item.quantity || 1) * mult;
+        const isCredit = item.details?.action === 'STO' || item.details?.action === 'STC' || item.type === 'Sell';
+        if (isCredit) totalGrossCredit += gross;
+        else totalGrossDebit -= gross;
+      }
 
       let itemDate = item.date || item.createdDate;
       if (!itemDate && isPosItem) {
@@ -1356,14 +1404,20 @@ export default function App() {
         if (legRoi) {
           totalNetProfit += legRoi.profit;
           maxDaysHeld = Math.max(maxDaysHeld, legRoi.daysHeld);
-          totalReqCap += legRoi.reqCap;
-          totalPeakCap += legRoi.peakCap;
-          totalExitCap += legRoi.exitCap;
+          if (isTradeGroup) {
+            totalReqCap = Math.max(totalReqCap, legRoi.reqCap);
+            totalPeakCap = Math.max(totalPeakCap, legRoi.peakCap);
+            totalExitCap = Math.max(totalExitCap, legRoi.exitCap);
+          } else {
+            totalReqCap += legRoi.reqCap;
+            totalPeakCap += legRoi.peakCap;
+            totalExitCap += legRoi.exitCap;
+          }
         } else {
           const req = item.requiredCapital || 0;
-          totalReqCap += req;
-          totalPeakCap += item.peakCapital || (req * 1.15);
-          totalExitCap += req;
+          totalReqCap = Math.max(totalReqCap, req);
+          totalPeakCap = Math.max(totalPeakCap, item.peakCapital || (req * 1.15));
+          totalExitCap = Math.max(totalExitCap, req);
         }
         totalMarketVal += item.requiredCapital || 0;
       }
@@ -1427,6 +1481,9 @@ export default function App() {
       totalExitCapital: totalExitCap,
       totalAvgCapital: totalAvgCapital,
       netProfit: totalNetProfit,
+      totalGrossCredit,
+      totalGrossDebit,
+      totalFees,
       avgROI: isNaN(avgROI) ? 0 : avgROI,
       peakROI: isNaN(peakROI) ? 0 : peakROI,
       annualizedROI: isNaN(annualizedROI) ? 0 : annualizedROI,
@@ -2023,6 +2080,8 @@ export default function App() {
                                               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                                                 action === 'BTO' || action === 'Buy' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
                                                 action === 'STO' || action === 'Sell' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
+                                                action === 'BTC' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30' :
+                                                action === 'STC' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
                                                 'bg-slate-800 text-slate-300 border border-slate-700'
                                               }`}>
                                                 {action} {trade.quantity}
@@ -2030,9 +2089,16 @@ export default function App() {
                                             </td>
                                             <td className="p-2 text-slate-400 text-xs font-sans">{formatTradeDateTime(trade.date)}</td>
                                             <td className="p-2">
-                                              <span className={`font-bold font-mono ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                                {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
-                                              </span>
+                                              <div className="flex flex-col">
+                                                <span className={`font-bold font-mono ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                  {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
+                                                </span>
+                                                {trade.fees ? (
+                                                  <span className="text-[9px] text-slate-500 font-sans">
+                                                    -${trade.fees.toFixed(2)} fee
+                                                  </span>
+                                                ) : null}
+                                              </div>
                                             </td>
                                             <td className="p-2 text-slate-300 font-mono">{metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}</td>
                                             <td className="p-2 text-slate-300 font-mono">{metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}</td>
@@ -2180,17 +2246,24 @@ export default function App() {
                                   {formatTradeDateTime(trade.date)}
                                 </td>
                                 <td className="p-3.5">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className={`font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                      {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
-                                    </span>
-                                    <span className={`text-[9px] font-sans px-1.5 py-0.2 rounded font-semibold ${
-                                      trade.status === 'Open'
-                                        ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
-                                        : 'text-slate-400 bg-slate-800 border border-slate-700/50'
-                                    }`}>
-                                      {trade.status === 'Open' ? 'Open' : 'Realized'}
-                                    </span>
+                                  <div className="flex flex-col">
+                                    <div className="flex items-center gap-1.5">
+                                      <span className={`font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                        {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
+                                      </span>
+                                      <span className={`text-[9px] font-sans px-1.5 py-0.2 rounded font-semibold ${
+                                        trade.status === 'Open'
+                                          ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
+                                          : 'text-slate-400 bg-slate-800 border border-slate-700/50'
+                                      }`}>
+                                        {trade.status === 'Open' ? 'Open' : 'Realized'}
+                                      </span>
+                                    </div>
+                                    {trade.fees ? (
+                                      <span className="text-[10px] text-slate-500 font-sans">
+                                        -${trade.fees.toFixed(2)} fee
+                                      </span>
+                                    ) : null}
                                   </div>
                                 </td>
                                 <td className="p-3.5 text-slate-300">
@@ -2774,14 +2847,39 @@ export default function App() {
                               <span className="text-slate-400 font-sans">Strategy Expiration:</span>
                               <span className="text-slate-200">{activeStrategy.expirationFormatted || '-'}</span>
                             </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Net Entry / Cost Basis:</span>
-                              <span className="text-slate-200">${Math.abs(strategyMetrics.netCostBasis).toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Net Market Price:</span>
-                              <span className="text-slate-200">${Math.abs(strategyMetrics.netCurrentPrice).toFixed(2)}</span>
-                            </div>
+                            {strategyMetrics.isOpen ? (
+                              <>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400 font-sans">Net Entry / Cost Basis:</span>
+                                  <span className="text-slate-200">${Math.abs(strategyMetrics.netCostBasis).toFixed(2)}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-slate-400 font-sans">Net Market Price:</span>
+                                  <span className="text-slate-200">${Math.abs(strategyMetrics.netCurrentPrice).toFixed(2)}</span>
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                {strategyMetrics.totalGrossCredit > 0 && (
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-sans">Gross Entry Credit:</span>
+                                    <span className="text-emerald-400">+${strategyMetrics.totalGrossCredit.toFixed(2)}</span>
+                                  </div>
+                                )}
+                                {strategyMetrics.totalGrossDebit < 0 && (
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-sans">Gross Exit Debit:</span>
+                                    <span className="text-rose-400">-${Math.abs(strategyMetrics.totalGrossDebit).toFixed(2)}</span>
+                                  </div>
+                                )}
+                                {strategyMetrics.totalFees > 0 && (
+                                  <div className="flex justify-between">
+                                    <span className="text-slate-400 font-sans">Total Fees & Comm.:</span>
+                                    <span className="text-slate-400">-${strategyMetrics.totalFees.toFixed(2)}</span>
+                                  </div>
+                                )}
+                              </>
+                            )}
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">Initial Entry Capital:</span>
                               <span className="text-slate-200">${strategyMetrics.totalRequiredCapital.toFixed(2)}</span>
@@ -2825,6 +2923,12 @@ export default function App() {
                               <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
                               <span className="text-slate-200">${(activeTrade.price || 0).toFixed(2)} × {activeTrade.quantity || 1}</span>
                             </div>
+                            {activeTrade.fees ? (
+                              <div className="flex justify-between">
+                                <span className="text-slate-400 font-sans">Fees & Commissions:</span>
+                                <span className="text-slate-400">-${activeTrade.fees.toFixed(2)}</span>
+                              </div>
+                            ) : null}
                             <div className="flex justify-between">
                               <span className="text-slate-400 font-sans">Required Capital at Open:</span>
                               <span className="text-slate-200">${(activeTrade.requiredCapital || 0).toFixed(2)}</span>
@@ -2838,7 +2942,7 @@ export default function App() {
                               <span>${(activeMetrics.avgCapital || activeTrade.requiredCapital || 0).toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Realized Gain/Loss:'}</span>
+                              <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Net Cash Flow / P&L:'}</span>
                               <span className={(activeMetrics.profit || 0) >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
                                 {(activeMetrics.profit || 0) >= 0 ? '+' : ''}${(activeMetrics.profit || 0).toFixed(2)}
                               </span>

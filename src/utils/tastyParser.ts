@@ -27,6 +27,11 @@ export interface ParsedOptionDetails {
   quantity: number;            // Absolute quantity (e.g. 1, 2)
   signedQuantity: number;      // Signed quantity (e.g. +1, -2)
   price: number;               // Execution or trade price
+  fees?: number;               // Total transaction fees & commissions
+  commission?: number;         // Base commission
+  otherFees?: number;          // Clearing, regulatory, proprietary index fees
+  grossValue?: number;         // Signed gross trade amount (e.g. +112.50 for STO, -34.00 for BTC)
+  netValue?: number;           // Signed net cashflow including fees (e.g. +111.23 for STO, -35.27 for BTC)
   formattedTradeDate: string;  // "Aug 10, 2026 12:50 PM"
   rawDescription: string;
 }
@@ -535,6 +540,48 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
 
   const multiplier = getContractMultiplier(rootSymbol, isOption, isFuture, act.multiplier || act.contract_multiplier);
 
+  // 4. Calculate Commissions, Fees, Gross Cash Flow & Net Cash Flow
+  const commission = Math.abs(parseFloat(act.commission || act['commission-amount'] || '0') || 0);
+  const clearingFees = Math.abs(parseFloat(act['clearing-fees'] || '0') || 0);
+  const regFees = Math.abs(parseFloat(act['regulatory-fees'] || '0') || 0);
+  const propFees = Math.abs(parseFloat(act['proprietary-index-fees'] || '0') || 0);
+  const snapFee = Math.abs(parseFloat(act.fee || act.fees || '0') || 0);
+  
+  const otherFees = clearingFees + regFees + propFees + snapFee;
+  let totalFees = commission + otherFees;
+
+  // Credit (inflow) vs Debit (outflow)
+  // STO (Sell to Open) & STC (Sell to Close) are Credits (inflow).
+  // BTO (Buy to Open) & BTC (Buy to Close) are Debits (outflow).
+  const isCredit = action === 'STO' || action === 'STC' || (actionType === 'Sell' && action !== 'BTC');
+  
+  // Gross trade value
+  const grossTradeMagnitude = price * quantity * multiplier;
+  const grossValue = isCredit ? grossTradeMagnitude : -grossTradeMagnitude;
+
+  // Signed net cashflow (after fees)
+  let netValue: number;
+  if (act['net-value'] !== undefined && act['net-value'] !== null && act['net-value'] !== '') {
+    const rawNet = parseFloat(act['net-value']);
+    if (!isNaN(rawNet)) {
+      netValue = isCredit ? Math.abs(rawNet) : -Math.abs(rawNet);
+      if (totalFees === 0 && Math.abs(grossTradeMagnitude - Math.abs(rawNet)) > 0) {
+        totalFees = Math.abs(grossTradeMagnitude - Math.abs(rawNet));
+      }
+    } else {
+      netValue = isCredit ? (grossTradeMagnitude - totalFees) : (-grossTradeMagnitude - totalFees);
+    }
+  } else if (act.amount !== undefined && act.amount !== null && act.amount !== '') {
+    const rawAmt = parseFloat(act.amount);
+    if (!isNaN(rawAmt)) {
+      netValue = isCredit ? Math.abs(rawAmt) : -Math.abs(rawAmt);
+    } else {
+      netValue = isCredit ? (grossTradeMagnitude - totalFees) : (-grossTradeMagnitude - totalFees);
+    }
+  } else {
+    netValue = isCredit ? (grossTradeMagnitude - totalFees) : (-grossTradeMagnitude - totalFees);
+  }
+
   return {
     rootSymbol: rootSymbol || 'UNKNOWN',
     futureCycle: futureCycle || undefined,
@@ -557,6 +604,11 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     quantity,
     signedQuantity,
     price,
+    fees: totalFees,
+    commission,
+    otherFees,
+    grossValue,
+    netValue,
     formattedTradeDate: formatTradeDateTime(tradeDate),
     rawDescription: description || rawSymbol
   };
@@ -855,6 +907,8 @@ export function groupItemsByTastyStrategy<T extends {
       let netCost = 0;
       let netCurr = 0;
 
+      const isTradeGroup = expItems.some(i => 'status' in i || (i as any).date);
+
       for (const item of expItems) {
         const qty = item.quantity || 1;
         const signedQty = item.details?.signedQuantity ?? (item.details?.action === 'STO' || item.details?.action === 'STC' ? -qty : qty);
@@ -862,15 +916,27 @@ export function groupItemsByTastyStrategy<T extends {
         totalQty += signedQty;
         totalVal += (item.totalValue || 0);
         totalPnl += (item.openPnl || 0);
-        totalReqCap += (item.requiredCapital || (item as any).capReq || (item.totalValue && item.quantity > 0 ? item.totalValue : 0));
+        
+        const itemReq = (item.requiredCapital || (item as any).capReq || (item.totalValue && item.quantity && item.quantity > 0 ? item.totalValue : 0));
+        if (isTradeGroup) {
+          // For closed trades across the same strategy, avoid adding up both opening and closing legs' capital requirements
+          totalReqCap = Math.max(totalReqCap, itemReq);
+        } else {
+          totalReqCap += itemReq;
+        }
+
         netCost += (item.averagePrice || item.price || 0) * signedQty * itemMult;
         netCurr += (item.currentPrice || item.price || 0) * signedQty * itemMult;
 
         if (calculateMetrics) {
           const m = calculateMetrics(item);
-          if (m?.profit) {
+          if (m?.profit !== undefined) {
             totalRealized += m.profit;
           }
+        } else if ((item as any).netValue !== undefined) {
+          totalRealized += (item as any).netValue;
+        } else if (item.details?.netValue !== undefined) {
+          totalRealized += item.details.netValue;
         }
       }
 
@@ -892,7 +958,7 @@ export function groupItemsByTastyStrategy<T extends {
         totalValue: totalVal,
         totalOpenPnl: totalPnl,
         totalRealizedProfit: totalRealized,
-        totalRequiredCapital: totalReqCap,
+        totalRequiredCapital: totalReqCap > 0 ? totalReqCap : (Math.abs(netCost) || 1),
         netCostBasis: netCost,
         netCurrentPrice: netCurr
       });
