@@ -96,6 +96,9 @@ interface SnapTradeAccount {
   balance?: {
     total?: { amount?: number; currency?: string };
     cash?: { amount?: number; currency?: string };
+    buying_power?: { amount?: number; currency?: string };
+    derivative_buying_power?: number;
+    equity_buying_power?: number;
   };
 }
 
@@ -410,14 +413,17 @@ export default function App() {
             const balances = Array.isArray(balData) ? balData : (balData.data || [balData]);
             const primaryBal = balances[0] || {};
             
-            const totalNetLiq = acc.balance?.total?.amount ?? primaryBal.total?.amount ?? primaryBal.amount ?? 0;
-            const cashAmount = primaryBal.buying_power ?? primaryBal.option_buying_power ?? primaryBal.cash ?? acc.balance?.cash?.amount ?? 0;
+            const totalNetLiq = acc.balance?.total?.amount ?? (typeof primaryBal.total === 'object' ? primaryBal.total?.amount : primaryBal.total) ?? primaryBal.amount ?? 0;
+            const rawCash = (typeof primaryBal.cash === 'object' ? primaryBal.cash?.amount : primaryBal.cash) ?? acc.balance?.cash?.amount ?? 0;
+            const rawBp = (typeof primaryBal.buying_power === 'object' ? primaryBal.buying_power?.amount : primaryBal.buying_power) ?? primaryBal.option_buying_power ?? rawCash;
 
             return {
               ...acc,
               balance: {
-                total: { amount: totalNetLiq || cashAmount, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.total?.currency || "USD" },
-                cash: { amount: cashAmount, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.cash?.currency || "USD" }
+                total: { amount: totalNetLiq || rawCash, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.total?.currency || "USD" },
+                cash: { amount: rawCash || rawBp, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.cash?.currency || "USD" },
+                buying_power: { amount: rawBp, currency: primaryBal.currency?.code || primaryBal.currency || "USD" },
+                derivative_buying_power: rawBp
               }
             };
           } catch {
@@ -499,7 +505,10 @@ export default function App() {
                   ...acc,
                   balance: {
                     total: balData.total || { amount: 0, currency: 'USD' },
-                    cash: balData.cash || { amount: 0, currency: 'USD' }
+                    cash: balData.cash || { amount: 0, currency: 'USD' },
+                    buying_power: { amount: balData.derivative_buying_power ?? balData.cash?.amount ?? 0, currency: 'USD' },
+                    derivative_buying_power: balData.derivative_buying_power,
+                    equity_buying_power: balData.equity_buying_power
                   }
                 };
               } catch {
@@ -1085,24 +1094,23 @@ export default function App() {
 
     let totalNetLiq = relevantAccounts.reduce((sum, a) => sum + (a.balance?.total?.amount || 0), 0);
     let totalCash = relevantAccounts.reduce((sum, a) => sum + (a.balance?.cash?.amount || 0), 0);
+    let totalBuyingPower = relevantAccounts.reduce((sum, a) => {
+      const bp = a.balance?.derivative_buying_power ?? a.balance?.buying_power?.amount ?? a.balance?.cash?.amount ?? 0;
+      return sum + bp;
+    }, 0);
+
     const openPositions = filteredPositions || [];
     const positionsValue = openPositions.reduce((sum, p) => sum + (p.totalValue || 0), 0);
 
-    // If totalCash is identical to or greater than totalNetLiq while open positions exist,
-    // Available Cash is the unencumbered cash (Net Liq minus capital deployed in positions)
-    if (totalNetLiq > 0 && positionsValue > 0) {
-      if (totalCash >= totalNetLiq || totalCash === 0) {
-        totalCash = Math.max(0, totalNetLiq - positionsValue);
-      }
-    } else if (totalNetLiq === 0 && totalCash > 0) {
-      totalNetLiq = totalCash + positionsValue;
-    } else if (totalNetLiq === 0 && positionsValue > 0) {
-      totalNetLiq = positionsValue;
+    // If broker didn't return netLiq, fallback to cash or positions value
+    if (totalNetLiq === 0 && (totalCash > 0 || positionsValue > 0)) {
+      totalNetLiq = totalCash > 0 ? totalCash : positionsValue;
     }
 
     return {
       netLiq: totalNetLiq || positionsValue || 0,
       cash: totalCash || 0,
+      buyingPower: totalBuyingPower || totalCash || 0,
       positionsCount: openPositions.length,
       tradesCount: (filteredTrades || []).length,
     };
@@ -1960,13 +1968,18 @@ export default function App() {
 
             <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
               <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                <span>Available Cash</span>
+                <span>Cash Balance</span>
                 <DollarSign className="w-4 h-4 text-emerald-400" />
               </div>
               <div className="text-2xl font-bold font-mono text-emerald-400">
                 ${portfolioSummary.cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
-              <div className="text-xs text-slate-500 mt-2">Ready for deployment</div>
+              <div className="text-xs text-slate-500 mt-2 flex items-center justify-between">
+                <span>Option BP</span>
+                <span className="font-mono text-slate-300 font-medium">
+                  ${portfolioSummary.buyingPower.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
+              </div>
             </div>
 
             <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
