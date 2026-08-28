@@ -4,47 +4,93 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ============================================================================
+   Alphatrack design tokens
+   ----------------------------------------------------------------------------
+   Single source of truth. Two rules:
+
+   1. Surfaces come from the 4-step elevation scale below. Never write a raw hex
+      in a component — if you need a new shade, the scale is wrong, not the call
+      site.
+   2. Financial colour is semantic (profit/loss/warning/...), never a raw
+      Tailwind palette name. P/L colour ALWAYS ships with an explicit +/- sign;
+      colour never carries meaning on its own.
+   ========================================================================== */
+
 @theme inline {
-    --font-heading: var(--font-sans);
-    --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: 'Courier New', Courier, monospace;
-    
-    --color-sidebar-ring: var(--sidebar-ring);
-    --color-sidebar-border: var(--sidebar-border);
-    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-    --color-sidebar-accent: var(--sidebar-accent);
-    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-    --color-sidebar-primary: var(--sidebar-primary);
-    --color-sidebar-foreground: var(--sidebar-foreground);
-    --color-sidebar: var(--sidebar);
-    --color-chart-5: var(--chart-5);
-    --color-chart-4: var(--chart-4);
-    --color-chart-3: var(--chart-3);
-    --color-chart-2: var(--chart-2);
-    --color-chart-1: var(--chart-1);
-    --color-ring: var(--ring);
-    --color-input: var(--input);
-    --color-border: var(--border);
-    --color-destructive: var(--destructive);
-    --color-accent-foreground: var(--accent-foreground);
-    --color-accent: var(--accent);
-    --color-muted-foreground: var(--muted-foreground);
-    --color-muted: var(--muted);
-    --color-secondary-foreground: var(--secondary-foreground);
-    --color-secondary: var(--secondary);
-    --color-primary-foreground: var(--primary-foreground);
-    --color-primary: var(--primary);
-    --color-popover-foreground: var(--popover-foreground);
-    --color-popover: var(--popover);
-    --color-card-foreground: var(--card-foreground);
-    --color-card: var(--card);
-    --color-foreground: var(--foreground);
+    /* --- Typography ------------------------------------------------------- */
+    /* Geist + Geist Mono are imported as JS modules in main.tsx so they load
+       before this stylesheet. Geist Mono carries the numeric columns. */
+    --font-sans: 'Geist Variable', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --font-heading: 'Geist Variable', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: 'Geist Mono Variable', ui-monospace, 'SF Mono', 'Cascadia Mono', 'Segoe UI Mono', Menlo, Consolas, monospace;
+
+    /* --- Elevation scale -------------------------------------------------- */
+    /* Perceptually even: OKLCH L 0.150 / 0.189 / 0.224 / 0.262 (ΔL ≈ 0.037),
+       hue held at ~275° so the whole app shares one cool tint. */
+    --color-surface-0: var(--surface-0);
+    --color-surface-1: var(--surface-1);
+    --color-surface-2: var(--surface-2);
+    --color-surface-3: var(--surface-3);
+
+    /* --- shadcn/Base-UI contract ------------------------------------------ */
+    /* These alias onto the elevation scale rather than competing with it, so
+       every existing primitive in components/ui/ themes correctly untouched. */
     --color-background: var(--background);
-    
-    --color-success: var(--success);
-    --color-error: var(--error);
-    --color-brand-accent: var(--brand-accent);
-    
+    --color-foreground: var(--foreground);
+    --color-card: var(--card);
+    --color-card-foreground: var(--card-foreground);
+    --color-popover: var(--popover);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-primary: var(--primary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-secondary: var(--secondary);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-muted: var(--muted);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-subtle-foreground: var(--subtle-foreground);
+    --color-accent: var(--accent);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-destructive: var(--destructive);
+    --color-destructive-foreground: var(--destructive-foreground);
+    --color-border: var(--border);
+    --color-input: var(--input);
+    --color-ring: var(--ring);
+
+    /* --- Semantic financial palette --------------------------------------- */
+    /* Contrast vs --surface-1 (#12131a) in parentheses; all clear WCAG AA 4.5:1
+       for small text on every one of the four surfaces. */
+    --color-profit: var(--profit);              /* 9.63  gains, BTO, Open, Call */
+    --color-loss: var(--loss);                  /* 6.88  losses, STC, disconnect */
+    --color-warning: var(--warning);            /* 11.10 short/STO, Put, re-auth */
+    --color-brand: var(--brand);                /* 6.21  brand text, active state */
+    --color-brand-fill: var(--brand-fill);      /* 6.02 against --foreground */
+    --color-strategy: var(--strategy);          /* 6.81  the "strategy" concept */
+    --color-info: var(--info);                  /* 10.25 BTC */
+
+    /* Solid-button steps. The tokens above are TEXT steps, tuned for legibility
+       ON a dark surface — using them as a solid fill under white text gives
+       2.69:1 (loss) and 1.67:1 (warning). These darker steps carry white text
+       at 6.29:1 and 5.02:1 respectively. */
+    --color-loss-fill: var(--loss-fill);
+    --color-warning-fill: var(--warning-fill);
+    --color-profit-fill: var(--profit-fill);
+
+    /* --- Chart palette ---------------------------------------------------- */
+    /* Validated with the dataviz skill's validate_palette.js against the real
+       #12131a surface: passes lightness band, chroma floor, adjacent-pair CVD
+       ΔE 8.4, normal-vision ΔE 19.3, and ≥3:1 contrast. Assign in fixed slot
+       order; never cycle to generate a 6th. */
+    --color-chart-1: var(--chart-1);
+    --color-chart-2: var(--chart-2);
+    --color-chart-3: var(--chart-3);
+    --color-chart-4: var(--chart-4);
+    --color-chart-5: var(--chart-5);
+    --color-chart-grid: var(--chart-grid);
+    --color-chart-axis: var(--chart-axis);
+
+    /* --- Radii ------------------------------------------------------------ */
+    /* button.tsx / tabs.tsx depend on min(var(--radius-md), 10px|12px). */
     --radius-sm: 6px;
     --radius-md: 8px;
     --radius-lg: 12px;
@@ -52,93 +98,116 @@
 }
 
 :root {
-    /* Elegant Dark Overrides */
-    --background: #09090b;
-    --foreground: #fafafa;
-    --card: #141416;
-    --card-foreground: #fafafa;
-    --popover: #141416;
-    --popover-foreground: #fafafa;
-    --primary: #fafafa;
-    --primary-foreground: #09090b;
-    --secondary: #27272a;
-    --secondary-foreground: #fafafa;
-    --muted: #1c1c1f;
-    --muted-foreground: #a1a1aa;
-    --accent: #27272a;
-    --accent-foreground: #fafafa;
-    --destructive: #ef4444;
-    --destructive-foreground: #fafafa;
-    --border: #27272a;
-    --input: #27272a;
-    --ring: #27272a;
-    
-    --success: #10b981;
-    --error: #ef4444;
-    --brand-accent: #3b82f6;
-    
-    --sidebar: #141416;
-    --sidebar-foreground: #fafafa;
-    --sidebar-primary: #3b82f6;
-    --sidebar-primary-foreground: #fafafa;
-    --sidebar-accent: #27272a;
-    --sidebar-accent-foreground: #fafafa;
-    --sidebar-border: #27272a;
-    --sidebar-ring: #3b82f6;
-}
+    color-scheme: dark;
 
-.dark {
-    /* Identical to root to enforce dark mode always */
-    --background: #09090b;
-    --foreground: #fafafa;
-    --card: #141416;
-    --card-foreground: #fafafa;
-    --popover: #141416;
-    --popover-foreground: #fafafa;
+    /* Elevation scale — the only surfaces in the app */
+    --surface-0: #0a0b0f;   /* page background; recessed table leg rows */
+    --surface-1: #12131a;   /* cards, panels, dialogs, popovers */
+    --surface-2: #191b24;   /* inset: sticky table head, group rows, inputs */
+    --surface-3: #21242f;   /* hover / active / chips */
+
+    /* shadcn contract, aliased onto the scale */
+    --background: var(--surface-0);
+    --foreground: #fafafa;              /* 17.75 on surface-1 */
+    --card: var(--surface-1);
+    --card-foreground: var(--foreground);
+    --popover: var(--surface-1);
+    --popover-foreground: var(--foreground);
     --primary: #fafafa;
-    --primary-foreground: #09090b;
-    --secondary: #27272a;
-    --secondary-foreground: #fafafa;
-    --muted: #1c1c1f;
-    --muted-foreground: #a1a1aa;
-    --accent: #27272a;
-    --accent-foreground: #fafafa;
-    --destructive: #ef4444;
-    --border: #27272a;
-    --input: #27272a;
-    --ring: #27272a;
+    --primary-foreground: var(--surface-0);
+    --secondary: var(--surface-3);
+    --secondary-foreground: var(--foreground);
+    --muted: var(--surface-2);
+    --muted-foreground: #a1a1aa;        /* 7.23 — secondary text */
+    --subtle-foreground: #8b8b96;       /* 5.50 — tertiary text; replaces the
+                                           slate-500 (#64748b, ~3.5:1) that
+                                           failed AA at 22 call sites */
+    --accent: var(--surface-3);
+    --accent-foreground: var(--foreground);
+    --destructive: #fb7185;
+    --destructive-foreground: #fafafa;
+    --border: #262a36;
+    --input: #262a36;
+
+    /* Focus ring. Previously #27272a — identical to --border — which made
+       `focus-visible:ring-ring/50` an invisible dark-grey ring on a near-black
+       surface, i.e. no visible focus indicator anywhere in the app. */
+    --ring: #6366f1;
+
+    /* Semantic financial palette */
+    --profit: #34d399;
+    --loss: #fb7185;
+    --warning: #fbbf24;
+    --brand: #818cf8;        /* text step — indigo-500 fails AA on dark */
+    --brand-fill: #4f46e5;   /* fill step — white on indigo-500 is only 4.28:1 */
+    --strategy: #a78bfa;
+    --info: #22d3ee;
+
+    /* Solid-fill steps (white text): 6.29 / 5.02 / 5.48 */
+    --loss-fill: #be123c;
+    --warning-fill: #b45309;
+    --profit-fill: #047857;
+
+    /* Chart slots (fixed order) + recessive chrome */
+    --chart-1: #6366f1;
+    --chart-2: #d95926;
+    --chart-3: #199e70;
+    --chart-4: #c98500;
+    --chart-5: #d55181;
+    --chart-grid: #21242f;
+    --chart-axis: #3a3f4f;
 }
 
 @layer base {
-  * {
-    @apply border-border outline-ring/50;
-  }
-  body {
-    @apply bg-background text-foreground h-full;
-  }
-  html {
-    @apply font-sans h-full;
-  }
+    * {
+        @apply border-border outline-ring/50;
+    }
+
+    html {
+        @apply font-sans h-full;
+        background-color: var(--surface-0);
+        color: var(--foreground);
+    }
+
+    body {
+        @apply bg-background text-foreground h-full antialiased;
+    }
+
+    /* Monospace is the numeric face — keep figures column-aligned by default. */
+    .font-mono {
+        font-variant-numeric: tabular-nums;
+    }
 }
 
-/* Custom sleek dark scrollbar */
+/* Respect the OS reduced-motion setting. There was no guard here before, and
+   several surfaces animate persistently. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Sleek dark scrollbar — now on tokens rather than three loose hex values. */
 .custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+    width: 6px;
+    height: 6px;
 }
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: #111218;
+    background: var(--surface-1);
 }
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #282b37;
-  border-radius: 9999px;
+    background: var(--surface-3);
+    border-radius: 9999px;
 }
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #3e4354;
+    background: #3a3f4f;
 }
-
-/* Firefox scrollbar support */
 .custom-scrollbar {
-  scrollbar-width: thin;
-  scrollbar-color: #282b37 #111218;
+    scrollbar-width: thin;
+    scrollbar-color: var(--surface-3) var(--surface-1);
 }

@@ -1,6 +1,6 @@
 # Alphatrack 📈
 
-Alphatrack is a high-performance portfolio intelligence and options trading journal built for modern traders. It brings together multi-broker syncing, intelligent options strategy grouping, capital-adjusted performance metrics, and AI-driven analytics.
+Alphatrack is a high-performance portfolio intelligence and options trading journal built for modern traders. It brings together multi-broker syncing, intelligent options strategy grouping, and capital-adjusted performance metrics.
 
 ---
 
@@ -20,9 +20,10 @@ Alphatrack is a high-performance portfolio intelligence and options trading jour
 - **Advanced Performance & Risk Metrics**:
   - Capital allocation & Return on Capital (ROC) tracking
   - Trade duration, win rate, profit factor, and max drawdown analytics
-  - Interactive charts powered by Recharts (equity curves, asset breakdowns, P&L distributions)
-- **AI-Powered Portfolio Insights**:
-  - Integrated Google Gemini API for trade post-mortems, risk analysis, and actionable trade recommendations.
+  - Inline sparklines and meters on the portfolio metric cards (cumulative realized P&L, capital utilisation, win/loss split), derived from synced trade data
+- **Design System**:
+  - Dark theme built on a 4-step elevation scale with a WCAG-verified semantic palette (profit / loss / warning / brand / strategy), Geist + Geist Mono, and tabular figures so numeric columns align
+  - Shadcn UI primitives on Base UI, with one shared `DataTable` driving every trades/positions view — grouped or flat, sortable, keyboard-navigable
 - **Secure & Persistent Architecture**:
   - Firebase Authentication (Google Sign-in & email auth)
   - Persistent cloud storage via Firestore with fallback local caching for credentials & session tokens.
@@ -33,9 +34,9 @@ Alphatrack is a high-performance portfolio intelligence and options trading jour
 
 - **Frontend**: [React 19](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), [Vite](https://vite.dev/)
 - **UI & Styling**: [Tailwind CSS v4](https://tailwindcss.com/), [Shadcn UI](https://ui.shadcn.com/), [Lucide React](https://lucide.dev/), [Motion](https://motion.dev/)
-- **Charts**: [Recharts](https://recharts.org/)
+- **Charts**: [Recharts](https://recharts.org/) (sparklines)
 - **Backend & APIs**: [Express](https://expressjs.com/), [TSX](https://github.com/privatenumber/tsx), [Axios](https://axios-http.com/)
-- **Integrations**: [@tastytrade/api](https://www.npmjs.com/package/@tastytrade/api), [SnapTrade TypeScript SDK](https://snaptrade.com/), [@google/genai](https://www.npmjs.com/package/@google/genai)
+- **Integrations**: [@tastytrade/api](https://www.npmjs.com/package/@tastytrade/api), [SnapTrade TypeScript SDK](https://snaptrade.com/)
 - **Database & Auth**: [Firebase](https://firebase.google.com/) (Auth & Firestore)
 
 ---

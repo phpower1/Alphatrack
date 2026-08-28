@@ -1,5 +1,11 @@
-import React, { StrictMode, Component, ErrorInfo, ReactNode } from 'react';
+import React, { StrictMode, ErrorInfo, ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { AlertTriangle } from 'lucide-react';
+
+// Fonts must be imported before index.css so their @font-face rules land first.
+import '@fontsource-variable/geist';
+import '@fontsource-variable/geist-mono';
+
 import App from './App.tsx';
 import './index.css';
 
@@ -32,76 +38,36 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{
-          minHeight: '100vh',
-          backgroundColor: '#0d0e12',
-          color: '#f8fafc',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '24px',
-          fontFamily: 'system-ui, -apple-system, sans-serif'
-        }}>
-          <div style={{
-            maxWidth: '500px',
-            width: '100%',
-            backgroundColor: '#13141a',
-            border: '1px solid #334155',
-            borderRadius: '16px',
-            padding: '32px',
-            textAlign: 'center',
-            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)'
-          }}>
-            <div style={{
-              width: '56px',
-              height: '56px',
-              backgroundColor: 'rgba(239, 68, 68, 0.1)',
-              border: '1px solid rgba(239, 68, 68, 0.2)',
-              borderRadius: '16px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              margin: '0 auto 20px auto',
-              color: '#f87171',
-              fontSize: '24px'
-            }}>
-              ⚠️
+        <div className="min-h-screen bg-background text-foreground font-sans flex items-center justify-center p-6">
+          <div className="w-full max-w-md bg-card rounded-xl ring-1 ring-border p-8 text-center shadow-2xl shadow-black/50">
+            <div
+              className="mx-auto mb-5 flex size-14 items-center justify-center rounded-xl bg-loss/10 ring-1 ring-loss/25 text-loss"
+              aria-hidden="true"
+            >
+              <AlertTriangle className="size-6" />
             </div>
-            <h2 style={{ fontSize: '20px', fontWeight: 'bold', margin: '0 0 8px 0', color: '#ffffff' }}>
+
+            <h2 className="font-heading text-xl font-semibold text-foreground mb-2">
               Application Render Notice
             </h2>
-            <p style={{ fontSize: '13px', color: '#94a3b8', lineHeight: '1.6', margin: '0 0 20px 0' }}>
-              Alphatrack encountered an issue while loading portfolio data. Click below to reload cleanly.
+            <p className="text-[13px] text-muted-foreground leading-relaxed mb-5">
+              Alphatrack encountered an issue while loading portfolio data. Click below to reload
+              cleanly.
             </p>
+
             {this.state.error && (
-              <div style={{
-                backgroundColor: '#1e293b',
-                padding: '12px',
-                borderRadius: '8px',
-                fontSize: '11px',
-                fontFamily: 'monospace',
-                color: '#fca5a5',
-                textAlign: 'left',
-                marginBottom: '24px',
-                overflowX: 'auto',
-                maxHeight: '120px'
-              }}>
+              <pre
+                className="bg-surface-2 rounded-lg p-3 mb-6 text-left text-[11px] font-mono text-loss overflow-x-auto max-h-30 whitespace-pre-wrap custom-scrollbar"
+                role="alert"
+              >
                 {this.state.error.message || String(this.state.error)}
-              </div>
+              </pre>
             )}
-            <div style={{ display: 'flex', gap: '12px', justifyContent: 'center' }}>
+
+            <div className="flex flex-wrap items-center justify-center gap-3">
               <button
                 onClick={() => window.location.reload()}
-                style={{
-                  backgroundColor: '#4f46e5',
-                  color: '#ffffff',
-                  border: 'none',
-                  borderRadius: '10px',
-                  padding: '12px 24px',
-                  fontSize: '13px',
-                  fontWeight: '600',
-                  cursor: 'pointer'
-                }}
+                className="rounded-lg bg-brand-fill px-6 py-3 text-[13px] font-semibold text-white transition-colors hover:bg-brand-fill/85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring cursor-pointer"
               >
                 Reload Alphatrack
               </button>
@@ -111,18 +77,9 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
                   sessionStorage.clear();
                   window.location.reload();
                 }}
-                style={{
-                  backgroundColor: '#1e293b',
-                  color: '#cbd5e1',
-                  border: '1px solid #475569',
-                  borderRadius: '10px',
-                  padding: '12px 20px',
-                  fontSize: '13px',
-                  fontWeight: '500',
-                  cursor: 'pointer'
-                }}
+                className="rounded-lg bg-surface-3 px-5 py-3 text-[13px] font-medium text-foreground ring-1 ring-border transition-colors hover:bg-surface-3/70 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring cursor-pointer"
               >
-                Reset Cache & Reload
+                Reset Cache &amp; Reload
               </button>
             </div>
           </div>
@@ -141,6 +98,3 @@ createRoot(document.getElementById('root')!).render(
     </ErrorBoundary>
   </StrictMode>,
 );
-
-
-

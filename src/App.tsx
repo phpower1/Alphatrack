@@ -1,44 +1,69 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { differenceInDays, parseISO, subDays } from 'date-fns';
-import { 
-  LogIn, 
-  Activity, 
-  RefreshCw, 
-  PlusCircle, 
-  ExternalLink, 
-  ShieldCheck, 
-  Wallet, 
-  Building2, 
-  TrendingUp, 
-  DollarSign, 
-  LogOut, 
-  Settings, 
-  Trash2, 
-  CheckCircle2, 
+import {
   AlertCircle,
+  Building2,
+  DollarSign,
   Layers,
-  ArrowUpRight,
-  ArrowDownRight,
-  Search,
-  Key,
-  ChevronDown,
-  ChevronRight,
-  FolderTree,
-  ListFilter,
-  Check,
-  User as UserIcon
+  LogIn,
+  PlusCircle,
+  RefreshCw,
+  ShieldCheck,
+  Trash2,
+  TrendingUp,
+  Wallet,
+  X
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 // Firebase imports
 import { auth, loginWithGoogle, logout, db } from './firebase';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import { getDoc, doc, setDoc } from 'firebase/firestore';
+
+import {
+  parseTastyTradeItem,
+  isTradeActivity,
+  formatTradeDateTime,
+  groupItemsByTastyStrategy,
+  getContractMultiplier,
+  StrategyGroup
+} from './utils/tastyParser';
+import type {
+  SnapTradeAccount,
+  Trade,
+  Position,
+  BrokerageConnection
+} from './types';
+
+export type { SnapTradeAccount, Trade, Position, BrokerageConnection };
+
+import { DataTable } from './components/DataTable/DataTable';
+import { buildTradeColumns } from './components/dashboard/tradeColumns';
+import { buildPositionColumns } from './components/dashboard/positionColumns';
+import { EmptyState } from './components/EmptyState';
+import { TableToolbar } from './components/dashboard/TableToolbar';
+import { AppHeader } from './components/layout/AppHeader';
+import { MetricCard } from './components/MetricCard';
+import { Money } from './components/format/Money';
+import { PnL } from './components/format/PnL';
+import { Percent } from './components/format/Percent';
+import { Spinner } from './components/Spinner';
+import { formatMoney } from './lib/format';
+import { Sparkline } from './components/viz/Sparkline';
+import { SplitMeter, WinLossBar } from './components/viz/SplitMeter';
 
 // Local / Firestore persistence helpers for Tastytrade session
 const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
@@ -68,93 +93,10 @@ const getLocalTastySession = (): StoredTastytradeSession | null => {
   } catch (e) {}
   return null;
 };
-import { 
-  parseTastyTradeItem, 
-  isTradeActivity, 
-  formatTradeDateTime, 
-  ParsedOptionDetails,
-  groupItemsByTastyStrategy,
-  getContractMultiplier,
-  UnderlyingGroup,
-  StrategyGroup
-} from './utils/tastyParser';
 
-interface SnapTradeAccount {
-  id: string;
-  brokerage_authorization?: string;
-  name?: string | null;
-  number: string;
-  institution_name: string;
-  created_date?: string;
-  sync_status?: {
-    initial_sync_completed?: boolean;
-  };
-  raw_type?: string;
-  meta?: {
-    type?: string;
-  };
-  balance?: {
-    total?: { amount?: number; currency?: string };
-    cash?: { amount?: number; currency?: string };
-    buying_power?: { amount?: number; currency?: string };
-    derivative_buying_power?: number;
-    equity_buying_power?: number;
-  };
-}
+// Domain shapes live in ./types so presentational components can import them
+// without pulling in this module.
 
-interface Trade {
-  id: string;
-  accountId: string;
-  brokerName: string;
-  symbol: string;
-  type: 'Buy' | 'Sell';
-  quantity: number;
-  price: number;
-  date: string;
-  status: 'Open' | 'Closed';
-  closePrice: number | null;
-  closeDate: string | null;
-  requiredCapital: number;
-  peakCapital: number;
-  description?: string;
-  details?: ParsedOptionDetails;
-  fees?: number;
-  commission?: number;
-  otherFees?: number;
-  grossValue?: number;
-  netValue?: number;
-}
-
-interface Position {
-  id: string;
-  accountId: string;
-  brokerName: string;
-  symbol: string;
-  quantity: number;
-  averagePrice: number;
-  currentPrice: number;
-  totalValue: number;
-  openPnl: number;
-  multiplier?: number;
-  details?: ParsedOptionDetails;
-  date?: string;
-  createdDate?: string;
-  costBasis?: number;
-  capReq?: number;
-  requiredCapital?: number;
-  peakCapital?: number;
-  extrinsicValue?: number;
-  realizedDayGain?: number;
-}
-
-interface BrokerageConnection {
-  id: string;
-  brokerage?: {
-    name: string;
-    slug: string;
-  };
-  disabled?: boolean;
-}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -169,6 +111,13 @@ export default function App() {
     mode: 'Interactive Demo Mode',
     clientIdMasked: null
   });
+
+  // Sync feedback. Previously the app gave none: fetchAllData's catch only
+  // logged to the console, so a total API outage looked identical to an empty
+  // portfolio, and there was no indication of when data was last refreshed.
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [pendingDisconnect, setPendingDisconnect] = useState<{ id: string; name: string } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   // Accounts & Data
   const [accounts, setAccounts] = useState<SnapTradeAccount[]>([]);
@@ -961,8 +910,17 @@ export default function App() {
       if (allTrades.length > 0 && !activeTradeId) {
         setActiveTradeId(allTrades[0].id);
       }
+      // Only stamp a successful sync, so the header never claims fresh data
+      // after a failed fetch.
+      setLastSyncedAt(Date.now());
+      setSyncError(null);
     } catch (error) {
       console.error('Error fetching SnapTrade portfolio data:', error);
+      setSyncError(
+        error instanceof Error
+          ? `Could not sync portfolio data: ${error.message}`
+          : 'Could not sync portfolio data. Check your connection and try again.'
+      );
     } finally {
       setLoading(false);
     }
@@ -1014,7 +972,7 @@ export default function App() {
       if (!res.ok) {
         let msg = data.error?.message || data.error || (typeof data.detail === 'string' ? data.detail : '');
         if (res.status === 401 || (typeof msg === 'string' && msg.includes('401'))) {
-          msg = 'Invalid or unapproved SnapTrade API credentials (401 Unauthorized). Please verify your Client ID and Consumer Key in the SnapTrade Dashboard and update them via Settings.';
+          msg = 'Invalid or unapproved SnapTrade API credentials (401 Unauthorized). Please verify your Client ID and Consumer Key in the SnapTrade Dashboard, then update SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY in the server .env file.';
         }
         throw new Error(msg || 'Failed to generate SnapTrade Connection Portal link');
       }
@@ -1023,7 +981,7 @@ export default function App() {
         setPortalUrl(data.redirectURI);
       } else {
         // Mock fallback prompt
-        setPortalError('SnapTrade API keys are not yet configured in .env. You can add them in Settings or use the Interactive Demo mode.');
+        setPortalError('SnapTrade API keys are not configured. Add SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY to the server .env file, or continue in demo mode.');
       }
     } catch (err: any) {
       setPortalError(err.message || 'Failed to open connection portal');
@@ -1032,9 +990,10 @@ export default function App() {
     }
   };
 
-  // Disconnect a brokerage
+  // Disconnect a brokerage. Confirmation is handled by the AlertDialog that
+  // sets `pendingDisconnect`, replacing a native confirm() dialog.
   const handleDisconnectBroker = async (authorizationId: string) => {
-    if (!user || !confirm('Are you sure you want to disconnect this brokerage?')) return;
+    if (!user) return;
     try {
       const res = await fetch(`/api/snaptrade/connections/${authorizationId}?uid=${encodeURIComponent(user.uid)}`, {
         method: 'DELETE'
@@ -1525,6 +1484,99 @@ export default function App() {
     return calculateStrategyMetrics(activeStrategy);
   }, [activeStrategy, calculateStrategyMetrics]);
 
+  // --- Table wiring -------------------------------------------------------
+  // Column definitions for the shared DataTable. These replace four
+  // hand-written <table> blocks that duplicated ~690 lines of markup.
+  const tradeColumns = useMemo(
+    () => buildTradeColumns({ calculateROI, calculateStrategyMetrics }, groupBy),
+    [calculateROI, calculateStrategyMetrics, groupBy]
+  );
+
+  const positionColumns = useMemo(() => buildPositionColumns(groupBy), [groupBy]);
+
+  const collapseState = useMemo(
+    () => ({
+      underlyings: collapsedUnderlyings,
+      strategies: collapsedStrategies,
+      toggleUnderlying,
+      toggleStrategy,
+    }),
+    [collapsedUnderlyings, collapsedStrategies]
+  );
+
+  const isFiltered = searchFilter.trim().length > 0;
+
+  // --- Derived series for the inline visualisations -----------------------
+  // Everything below is computed from data already synced. Where no history
+  // exists (net liq, cash) the card gets a meter instead of a sparkline rather
+  // than a fabricated series.
+  const realizedPnlSeries = useMemo(() => {
+    const closed = filteredTrades
+      .filter((t) => t.status === 'Closed' && t.closeDate)
+      .map((t) => ({ date: t.closeDate as string, profit: calculateROI(t)?.profit ?? 0 }))
+      .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    let cumulative = 0;
+    return closed.map((entry) => {
+      cumulative += entry.profit;
+      return { label: formatTradeDateTime(entry.date), value: cumulative };
+    });
+  }, [filteredTrades, calculateROI]);
+
+  const tradeActivitySeries = useMemo(() => {
+    const buckets = new Map<string, { label: string; time: number; value: number }>();
+
+    for (const trade of filteredTrades) {
+      if (!trade.date) continue;
+      const parsed = new Date(trade.date);
+      if (Number.isNaN(parsed.getTime())) continue;
+
+      // Bucket by ISO week-start so the series reads as a trend, not noise.
+      const weekStart = new Date(parsed);
+      weekStart.setHours(0, 0, 0, 0);
+      weekStart.setDate(weekStart.getDate() - weekStart.getDay());
+
+      const key = weekStart.toISOString().slice(0, 10);
+      const existing = buckets.get(key);
+      if (existing) {
+        existing.value += 1;
+      } else {
+        buckets.set(key, {
+          label: `Week of ${weekStart.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`,
+          time: weekStart.getTime(),
+          value: 1,
+        });
+      }
+    }
+
+    return Array.from(buckets.values())
+      .sort((a, b) => a.time - b.time)
+      .map(({ label, value }) => ({ label, value }));
+  }, [filteredTrades]);
+
+  const positionsSplit = useMemo(() => {
+    let wins = 0;
+    let losses = 0;
+    for (const position of filteredPositions) {
+      const pnl = position.openPnl || 0;
+      if (pnl > 0) wins += 1;
+      else if (pnl < 0) losses += 1;
+    }
+    return { wins, losses };
+  }, [filteredPositions]);
+
+  const positionsMarketValue = useMemo(
+    () => filteredPositions.reduce((sum, p) => sum + (p.totalValue || 0), 0),
+    [filteredPositions]
+  );
+
+  // Realized P&L is derived only from CLOSED trades, so it never picks up the
+  // synthesised flat-5% estimate that calculateROI applies to open trades with
+  // no matching position.
+  const realizedPnlTotal = realizedPnlSeries.length
+    ? realizedPnlSeries[realizedPnlSeries.length - 1].value
+    : 0;
+
   const handleGoogleLogin = async () => {
     setAuthError(null);
     setIsSigningIn(true);
@@ -1551,32 +1603,46 @@ export default function App() {
 
   if (!isAuthReady) {
     return (
-      <div className="min-h-screen bg-[#0d0e12] flex flex-col items-center justify-center p-4">
-        <Activity className="w-8 h-8 text-indigo-400 animate-spin" />
-        <div className="mt-4 text-slate-400 font-mono text-sm tracking-widest uppercase">INITIALIZING ALPHATRACK...</div>
+      <div
+        className="min-h-screen bg-background flex flex-col items-center justify-center gap-5 p-4"
+        role="status"
+        aria-live="polite"
+      >
+        <div className="flex items-center gap-2.5">
+          <div className="flex size-9 items-center justify-center rounded-lg bg-brand-fill/20 ring-1 ring-brand/30">
+            <TrendingUp className="size-4.5 text-brand" aria-hidden="true" />
+          </div>
+          <span className="font-heading text-xl font-extrabold tracking-tight text-foreground">
+            Alphatrack
+          </span>
+        </div>
+        <div className="flex items-center gap-2.5 text-xs tracking-wide text-muted-foreground">
+          <Spinner size="sm" label="" />
+          <span>Loading your portfolio…</span>
+        </div>
       </div>
     );
   }
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-[#0d0e12] flex items-center justify-center p-4">
-        <Card className="w-full max-w-md bg-[#13141a] border-slate-800 text-slate-100 shadow-2xl">
+      <div className="min-h-screen bg-background flex items-center justify-center p-4">
+        <Card className="w-full max-w-md bg-card border-border text-foreground shadow-2xl">
           <CardHeader className="text-center pb-6">
-            <div className="mx-auto w-14 h-14 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-4 border border-indigo-500/20">
-              <TrendingUp className="w-7 h-7 text-indigo-400" />
+            <div className="mx-auto w-14 h-14 bg-brand/10 rounded-2xl flex items-center justify-center mb-4 border border-brand/20">
+              <TrendingUp className="w-7 h-7 text-brand" />
             </div>
-            <CardTitle className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white via-slate-200 to-indigo-300 bg-clip-text text-transparent">
+            <CardTitle className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground via-foreground/85 to-brand bg-clip-text text-transparent">
               Alphatrack
             </CardTitle>
-            <CardDescription className="text-slate-400 mt-2 text-sm leading-relaxed">
+            <CardDescription className="text-muted-foreground mt-2 text-sm leading-relaxed">
               Connect to any brokerage account via SnapTrade. Universal multi-broker portfolio & capital-adjusted ROI tracking.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4 pb-8">
             {authError && (
-              <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-3.5 rounded-xl leading-relaxed">
-                <div className="font-semibold text-rose-400 flex items-center gap-1.5 mb-1">
+              <div className="bg-loss/10 border border-loss/30 text-loss text-xs p-3.5 rounded-xl leading-relaxed">
+                <div className="font-semibold text-loss flex items-center gap-1.5 mb-1">
                   <AlertCircle className="w-4 h-4" />
                   <span>Authentication Notice</span>
                 </div>
@@ -1588,17 +1654,17 @@ export default function App() {
               onClick={handleGoogleLogin} 
               disabled={isSigningIn}
               size="lg" 
-              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-medium py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-3 transition-all cursor-pointer disabled:opacity-50"
+              className="w-full bg-brand-fill hover:bg-brand-fill/85 text-white font-medium py-6 rounded-xl shadow-lg shadow-brand-fill/20 flex items-center justify-center gap-3 transition-all cursor-pointer disabled:opacity-50"
             >
               {isSigningIn ? (
-                <Activity className="w-5 h-5 animate-spin" />
+                <Spinner size="md" label="" />
               ) : (
                 <LogIn className="w-5 h-5" />
               )}
               {isSigningIn ? 'Opening Google Login...' : 'Sign in with Google'}
             </Button>
-            <div className="flex items-center justify-center gap-2 text-xs text-slate-500 mt-2">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <div className="flex items-center justify-center gap-2 text-xs text-subtle-foreground mt-2">
+              <ShieldCheck className="w-4 h-4 text-profit" />
               <span>Supports Tastytrade, Robinhood, Schwab, Fidelity, Webull & 100+ brokers</span>
             </div>
           </CardContent>
@@ -1608,280 +1674,78 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen flex flex-col font-sans bg-[#0d0e12] text-slate-100 antialiased selection:bg-indigo-500 selection:text-white overflow-hidden">
-      {/* Top Navigation Bar */}
-      <header className="h-16 px-6 lg:px-8 flex items-center justify-between border-b border-slate-800/80 bg-[#111218]/90 backdrop-blur shrink-0 z-50">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center shadow-sm">
-              <TrendingUp className="w-4 h-4 text-indigo-400" />
-            </div>
-            <span className="font-extrabold tracking-tight text-lg text-white">ALPHATRACK</span>
-          </div>
+    <div className="min-h-screen flex flex-col font-sans bg-background text-foreground antialiased selection:bg-brand selection:text-foreground lg:h-screen lg:overflow-hidden">
+      <AppHeader
+        user={user}
+        accounts={accounts}
+        selectedAccountId={selectedAccountId}
+        onSelectAccount={setSelectedAccountId}
+        connections={connections}
+        tastyConnected={tastyConnected}
+        dbError={dbError}
+        isDemoData={!apiStatus.isConfigured && accounts.length > 0}
+        refreshing={refreshing}
+        lastSyncedAt={lastSyncedAt}
+        onRefresh={handleRefresh}
+        onOpenTastyDialog={() => setTastyDialogOpen(true)}
+        onOpenConnectionsDialog={() => setConnectionsDialogOpen(true)}
+        onOpenConnectionPortal={() => handleOpenConnectionPortal()}
+        onSignOut={logout}
+      />
 
-          {connections.some(c => c.disabled) && (
+      {/* Sync failures were previously silent — only a console.error. */}
+      {syncError && (
+        <div
+          role="alert"
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-loss/25 bg-loss/10 px-4 py-2 text-xs text-loss lg:px-6"
+        >
+          <span className="flex items-center gap-2">
+            <AlertCircle className="size-4 shrink-0" aria-hidden="true" />
+            {syncError}
+          </span>
+          <span className="flex shrink-0 items-center gap-2">
             <button
-              onClick={() => setConnectionsDialogOpen(true)}
-              className="flex items-center gap-1.5 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs px-3 py-1 rounded-full border border-amber-500/30 cursor-pointer transition-all animate-pulse"
+              type="button"
+              onClick={handleRefresh}
+              className="cursor-pointer rounded px-2 py-0.5 font-semibold underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
-              <AlertCircle className="w-3.5 h-3.5" />
-              <span>Broker Re-auth Needed</span>
+              Retry
             </button>
-          )}
-
-          {dbError && (
-            <div className="bg-amber-500/10 text-amber-300 text-xs px-3 py-1 rounded-full border border-amber-500/20">
-              {dbError}
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center gap-3">
-          {/* Account Selector */}
-          {accounts.length > 0 && (
-            <div className="relative flex items-center">
-              <select
-                aria-label="Select Brokerage Account"
-                className="bg-[#181a22] border border-slate-700/80 hover:border-slate-600 text-slate-200 pl-3.5 pr-8 py-1.5 rounded-xl text-xs font-medium cursor-pointer outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all appearance-none shadow-sm"
-                value={selectedAccountId}
-                onChange={(e) => setSelectedAccountId(e.target.value)}
-              >
-                <option value="ALL">🌐 All Accounts ({accounts.length} Brokerages)</option>
-                {accounts.map(acc => (
-                  <option key={acc.id} value={acc.id}>
-                    🏦 {acc.institution_name} • {acc.name || acc.number} (${(acc.balance?.total?.amount || 0).toLocaleString()})
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 pointer-events-none" />
-            </div>
-          )}
-
-          {/* User Configuration & Profile Dropdown Menu */}
-          <div className="relative" ref={userMenuRef}>
             <button
-              onClick={() => setUserMenuOpen(prev => !prev)}
-              className={`flex items-center gap-2.5 px-3 py-1.5 rounded-xl border transition-all cursor-pointer ${
-                userMenuOpen 
-                  ? 'bg-slate-800/90 border-indigo-500/50 text-white shadow-lg shadow-indigo-500/10' 
-                  : 'bg-[#181a22] border-slate-700/80 hover:border-slate-600 text-slate-200 hover:bg-slate-800/80 shadow-sm'
-              }`}
-              title="User Configuration & Broker Settings"
+              type="button"
+              onClick={() => setSyncError(null)}
+              aria-label="Dismiss sync error"
+              className="cursor-pointer rounded p-0.5 hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring"
             >
-              {/* User Avatar / Initials */}
-              <div className="relative">
-                {user.photoURL ? (
-                  <img src={user.photoURL} alt="User Avatar" className="w-6 h-6 rounded-lg object-cover" />
-                ) : (
-                  <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-[11px] font-bold text-white shadow-inner">
-                    {user.email ? user.email[0].toUpperCase() : <UserIcon className="w-3.5 h-3.5" />}
-                  </div>
-                )}
-                {/* Status indicator dot */}
-                <span className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full ring-2 ring-[#111218] ${
-                  connections.some(c => c.disabled) 
-                    ? 'bg-amber-400 animate-pulse' 
-                    : tastyConnected 
-                      ? 'bg-emerald-400' 
-                      : 'bg-indigo-400'
-                }`} />
-              </div>
-
-              <div className="flex flex-col items-start text-left leading-tight hidden sm:flex">
-                <span className="text-xs font-semibold text-white truncate max-w-[130px]">
-                  {user.displayName || user.email?.split('@')[0] || 'Trader'}
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono flex items-center gap-1">
-                  {tastyConnected ? '🍒 Tasty Live' : `${connections.length || accounts.length} Broker(s)`}
-                </span>
-              </div>
-
-              <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${userMenuOpen ? 'rotate-180 text-indigo-400' : ''}`} />
+              <X className="size-3.5" aria-hidden="true" />
             </button>
-
-            {/* Dropdown Menu Popover */}
-            {userMenuOpen && (
-              <div className="absolute right-0 top-11 mt-2 w-80 bg-[#13141a] border border-slate-700/90 rounded-2xl shadow-2xl z-50 p-3 space-y-3 backdrop-blur-xl animate-in fade-in slide-in-from-top-2 duration-150">
-                {/* User Info Header */}
-                <div className="flex items-center gap-3 p-2.5 bg-[#181a24] rounded-xl border border-slate-800/80">
-                  {user.photoURL ? (
-                    <img src={user.photoURL} alt="User Avatar" className="w-10 h-10 rounded-xl object-cover" />
-                  ) : (
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-sm font-bold text-white shadow-md">
-                      {user.email ? user.email[0].toUpperCase() : <UserIcon className="w-5 h-5" />}
-                    </div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs font-bold text-white truncate">
-                      {user.displayName || user.email?.split('@')[0] || 'Trading Account'}
-                    </div>
-                    <div className="text-[11px] text-slate-400 truncate">{user.email}</div>
-                    <div className="flex items-center gap-1.5 mt-0.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                      <span className="text-[10px] text-emerald-400 font-medium">Firebase Authenticated</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Instant Sync Action */}
-                <div>
-                  <button
-                    onClick={() => {
-                      handleRefresh();
-                      setUserMenuOpen(false);
-                    }}
-                    disabled={refreshing}
-                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group disabled:opacity-50"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 group-hover:text-indigo-300">
-                        <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-white">Sync Portfolio Data</div>
-                        <div className="text-[10px] text-slate-400">Update balances, trades & quotes</div>
-                      </div>
-                    </div>
-                    <Badge variant="outline" className="text-[10px] bg-slate-800 text-slate-300 border-slate-700">
-                      {refreshing ? 'Syncing...' : 'Sync'}
-                    </Badge>
-                  </button>
-                </div>
-
-                {/* Broker Integrations Section */}
-                <div className="space-y-1.5 pt-1">
-                  <div className="text-[10px] font-bold tracking-wider text-slate-400 uppercase px-1">
-                    Broker Integrations
-                  </div>
-
-                  {/* Tastytrade Direct API */}
-                  <button
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      setTastyDialogOpen(true);
-                    }}
-                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-base">
-                        🍒
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-white flex items-center gap-1.5">
-                          <span>Tastytrade Direct API</span>
-                        </div>
-                        <div className="text-[10px] text-slate-400">
-                          {tastyConnected ? 'Real-time quotes & futures active' : 'Connect for real-time data'}
-                        </div>
-                      </div>
-                    </div>
-                    {tastyConnected ? (
-                      <Badge className="bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30 text-[10px] font-semibold flex items-center gap-1">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                        Live
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[10px] bg-rose-500/10 text-rose-300 border-rose-500/30 font-semibold">
-                        Connect
-                      </Badge>
-                    )}
-                  </button>
-
-                  {/* Connected Brokerages Modal Trigger */}
-                  <button
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      setConnectionsDialogOpen(true);
-                    }}
-                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400 group-hover:text-indigo-300">
-                        <Building2 className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-white">Connected Brokerages</div>
-                        <div className="text-[10px] text-slate-400">
-                          {connections.length || accounts.length} linked broker account(s)
-                        </div>
-                      </div>
-                    </div>
-                    {connections.some(c => c.disabled) ? (
-                      <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-semibold">
-                        Re-auth
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[10px] bg-slate-800 text-slate-300 border-slate-700 font-semibold">
-                        Manage ({connections.length || accounts.length})
-                      </Badge>
-                    )}
-                  </button>
-
-                  {/* Link Other Brokers (SnapTrade Portal) */}
-                  <button
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      handleOpenConnectionPortal();
-                    }}
-                    className="w-full flex items-center justify-between p-2.5 rounded-xl bg-[#181a24] hover:bg-[#1f2230] border border-slate-800/80 hover:border-slate-700 text-left transition-all cursor-pointer group"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-center text-purple-400 group-hover:text-purple-300">
-                        <PlusCircle className="w-4 h-4" />
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-white">Link Other Brokers</div>
-                        <div className="text-[10px] text-slate-400">Robinhood, Schwab, Fidelity...</div>
-                      </div>
-                    </div>
-                    <Badge variant="outline" className="text-[10px] bg-indigo-500/10 text-indigo-300 border-indigo-500/30 font-semibold">
-                      + Link
-                    </Badge>
-                  </button>
-                </div>
-
-                {/* Sign Out Footer */}
-                <div className="pt-2 border-t border-slate-800/80">
-                  <button
-                    onClick={() => {
-                      setUserMenuOpen(false);
-                      logout();
-                    }}
-                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 text-xs font-semibold transition-all cursor-pointer"
-                  >
-                    <LogOut className="w-4 h-4" />
-                    <span>Sign Out</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          </span>
         </div>
-      </header>
+      )}
 
       {/* Main Content Area */}
       {accounts.length === 0 && !loading ? (
         <main className="flex-1 flex items-center justify-center p-6">
           {connections.length > 0 ? (
-            <Card className="w-full max-w-lg bg-[#13141a] border-slate-800/80 shadow-2xl p-6 text-center">
-              <div className="mx-auto w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-indigo-500/20">
-                <Building2 className="w-8 h-8 text-indigo-400" />
+            <Card className="w-full max-w-lg bg-card border-border/80 shadow-2xl p-6 text-center">
+              <div className="mx-auto w-16 h-16 bg-brand/10 rounded-2xl flex items-center justify-center mb-5 border border-brand/20">
+                <Building2 className="w-8 h-8 text-brand" />
               </div>
-              <CardTitle className="text-2xl font-bold text-white mb-2">Brokerage Linked</CardTitle>
-              <CardDescription className="text-slate-400 text-sm leading-relaxed mb-6">
+              <CardTitle className="text-2xl font-bold text-foreground mb-2">Brokerage Linked</CardTitle>
+              <CardDescription className="text-muted-foreground text-sm leading-relaxed mb-6">
                 You have {connections.length} linked brokerage connection(s). If your accounts are still syncing or require periodic authentication refresh, you can reconnect or trigger an immediate sync below.
               </CardDescription>
 
               <div className="flex flex-col gap-3 mb-6">
                 {connections.map((c) => (
-                  <div key={c.id} className="bg-[#181a22] border border-slate-800 rounded-xl p-3.5 flex items-center justify-between">
+                  <div key={c.id} className="bg-surface-2 border border-border rounded-xl p-3.5 flex items-center justify-between">
                     <div className="text-left">
-                      <div className="text-xs font-bold text-white">{c.brokerage?.name || 'Brokerage Connection'}</div>
-                      <div className="text-[11px] text-slate-400">
+                      <div className="text-xs font-bold text-foreground">{c.brokerage?.name || 'Brokerage Connection'}</div>
+                      <div className="text-[11px] text-muted-foreground">
                         Status: {c.disabled ? (
-                          <span className="text-amber-400 font-medium">Re-authentication Required</span>
+                          <span className="text-warning font-medium">Re-authentication Required</span>
                         ) : (
-                          <span className="text-emerald-400 font-medium">Active & Connected</span>
+                          <span className="text-profit font-medium">Active & Connected</span>
                         )}
                       </div>
                     </div>
@@ -1889,7 +1753,7 @@ export default function App() {
                       <Button
                         onClick={() => handleOpenConnectionPortal(c.id)}
                         size="sm"
-                        className="bg-amber-600 hover:bg-amber-500 text-white text-xs h-7 px-3 rounded-lg"
+                        className="bg-warning-fill hover:bg-warning-fill/85 text-white text-xs h-7 px-3 rounded-lg"
                       >
                         <RefreshCw className="w-3 h-3 mr-1" />
                         Reconnect
@@ -1905,15 +1769,15 @@ export default function App() {
                   disabled={refreshing}
                   size="lg"
                   variant="outline"
-                  className="flex-1 border-slate-700 bg-[#181a22] hover:bg-slate-800 text-slate-200 text-xs py-5 rounded-xl cursor-pointer"
+                  className="flex-1 border-border bg-surface-2 hover:bg-surface-3 text-foreground text-xs py-5 rounded-xl cursor-pointer"
                 >
-                  <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin text-indigo-400' : ''}`} />
+                  <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin text-brand' : ''}`} />
                   Sync Portfolio
                 </Button>
                 <Button
                   onClick={() => handleOpenConnectionPortal()}
                   size="lg"
-                  className="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-xs py-5 rounded-xl shadow-lg shadow-indigo-600/20 cursor-pointer"
+                  className="flex-1 bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs py-5 rounded-xl shadow-lg shadow-brand-fill/20 cursor-pointer"
                 >
                   <PlusCircle className="w-4 h-4 mr-2" />
                   Link Another Broker
@@ -1921,18 +1785,18 @@ export default function App() {
               </div>
             </Card>
           ) : (
-            <Card className="w-full max-w-lg bg-[#13141a] border-slate-800/80 shadow-2xl p-6 text-center">
-              <div className="mx-auto w-16 h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-5 border border-indigo-500/20">
-                <Building2 className="w-8 h-8 text-indigo-400" />
+            <Card className="w-full max-w-lg bg-card border-border/80 shadow-2xl p-6 text-center">
+              <div className="mx-auto w-16 h-16 bg-brand/10 rounded-2xl flex items-center justify-center mb-5 border border-brand/20">
+                <Building2 className="w-8 h-8 text-brand" />
               </div>
-              <CardTitle className="text-2xl font-bold text-white mb-2">Connect Your Brokerage</CardTitle>
-              <CardDescription className="text-slate-400 text-sm leading-relaxed mb-6">
+              <CardTitle className="text-2xl font-bold text-foreground mb-2">Connect Your Brokerage</CardTitle>
+              <CardDescription className="text-muted-foreground text-sm leading-relaxed mb-6">
                 Connect your Tastytrade, Robinhood, Charles Schwab, Fidelity, Webull, or Interactive Brokers account via SnapTrade to automatically sync your positions, transactions, and ROI analytics.
               </CardDescription>
 
               <div className="grid grid-cols-3 gap-2 mb-6">
                 {['Tastytrade', 'Robinhood', 'Charles Schwab', 'Fidelity', 'Webull', 'Interactive Brokers'].map((broker) => (
-                  <div key={broker} className="bg-[#181a22] border border-slate-800 rounded-lg p-2 text-xs font-medium text-slate-300">
+                  <div key={broker} className="bg-surface-2 border border-border rounded-lg p-2 text-xs font-medium text-muted-foreground">
                     {broker}
                   </div>
                 ))}
@@ -1941,7 +1805,7 @@ export default function App() {
               <Button
                 onClick={() => handleOpenConnectionPortal()}
                 size="lg"
-                className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-6 rounded-xl shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                className="w-full bg-brand-fill hover:bg-brand-fill/85 text-foreground font-semibold py-6 rounded-xl shadow-lg shadow-brand-fill/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
               >
                 <PlusCircle className="w-5 h-5" />
                 Link Brokerage Account
@@ -1950,832 +1814,197 @@ export default function App() {
           )}
         </main>
       ) : (
-        <main className="flex-1 flex flex-col p-4 lg:p-6 max-w-[1700px] w-full mx-auto gap-4 lg:gap-6 min-h-0 overflow-hidden">
-          {/* Top Metric Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 shrink-0">
-            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
-              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                <span>Portfolio Net Liq</span>
-                <Wallet className="w-4 h-4 text-indigo-400" />
-              </div>
-              <div className="text-2xl font-bold font-mono text-white">
-                ${portfolioSummary.netLiq.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-              <div className="text-xs text-slate-500 mt-2">
-                {selectedAccountId === 'ALL' ? `Across ${accounts.length} linked accounts` : 'Selected Account'}
-              </div>
-            </div>
+        <main className="flex-1 flex flex-col p-4 lg:p-6 max-w-[1700px] w-full mx-auto gap-4 lg:gap-6 lg:min-h-0 lg:overflow-hidden">
+          {/*
+            Metric strip. Each card is a stat tile; its visualisation matches
+            its own label. Net Liq and Cash get meters rather than sparklines
+            because no historical series exists for them — synthesising one
+            would be dishonest.
+          */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 shrink-0">
+            <MetricCard
+              label="Portfolio Net Liq"
+              icon={Wallet}
+              loading={loading}
+              value={<Money value={portfolioSummary.netLiq} />}
+              viz={
+                portfolioSummary.netLiq > 0 ? (
+                  <SplitMeter
+                    value={positionsMarketValue}
+                    total={portfolioSummary.netLiq}
+                    tone="brand"
+                    label="Deployed in positions"
+                  />
+                ) : undefined
+              }
+              footer={
+                selectedAccountId === 'ALL'
+                  ? `Across ${accounts.length} linked ${accounts.length === 1 ? 'account' : 'accounts'}`
+                  : 'Selected account'
+              }
+            />
 
-            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
-              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                <span>Cash Balance</span>
-                <DollarSign className="w-4 h-4 text-emerald-400" />
-              </div>
-              <div className="text-2xl font-bold font-mono text-emerald-400">
-                ${portfolioSummary.cash.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </div>
-              <div className="text-xs text-slate-500 mt-2 flex items-center justify-between">
-                <span>Option BP</span>
-                <span className="font-mono text-slate-300 font-medium">
-                  ${portfolioSummary.buyingPower.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <MetricCard
+              label="Cash Balance"
+              icon={DollarSign}
+              accent="profit"
+              loading={loading}
+              value={<Money value={portfolioSummary.cash} />}
+              viz={
+                portfolioSummary.netLiq > 0 ? (
+                  <SplitMeter
+                    value={portfolioSummary.cash}
+                    total={portfolioSummary.netLiq}
+                    tone="profit"
+                    label="Share of net liq"
+                  />
+                ) : undefined
+              }
+              footer={
+                <span className="flex items-center justify-between">
+                  <span>Option BP</span>
+                  <Money value={portfolioSummary.buyingPower} className="text-muted-foreground" />
                 </span>
-              </div>
-            </div>
+              }
+            />
 
-            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
-              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                <span>Total Trades</span>
-                <TrendingUp className="w-4 h-4 text-indigo-400" />
-              </div>
-              <div className="text-2xl font-bold font-mono text-white">
-                {portfolioSummary.tradesCount}
-              </div>
-              <div className="text-xs text-slate-500 mt-2">Synced transaction history</div>
-            </div>
+            <MetricCard
+              label="Realized P&L"
+              icon={TrendingUp}
+              loading={loading}
+              value={<PnL value={realizedPnlTotal} size="lg" />}
+              viz={
+                <Sparkline
+                  data={realizedPnlSeries}
+                  tone="polarity"
+                  currency="USD"
+                  ariaLabel="Cumulative realized profit and loss over time"
+                />
+              }
+              footer={`${portfolioSummary.tradesCount} ${
+                portfolioSummary.tradesCount === 1 ? 'trade' : 'trades'
+              } synced${realizedPnlSeries.length ? '' : ' · no closed trades yet'}`}
+            />
 
-            <div className="bg-[#13141a] border border-slate-800/80 p-5 rounded-2xl shadow-sm flex flex-col justify-between">
-              <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400 mb-2">
-                <span>Open Positions</span>
-                <Layers className="w-4 h-4 text-amber-400" />
-              </div>
-              <div className="text-2xl font-bold font-mono text-white">
-                {portfolioSummary.positionsCount}
-              </div>
-              <div className="text-xs text-slate-500 mt-2">Active market exposures</div>
-            </div>
+            <MetricCard
+              label="Open Positions"
+              icon={Layers}
+              accent="warning"
+              loading={loading}
+              value={portfolioSummary.positionsCount}
+              viz={
+                positionsSplit.wins + positionsSplit.losses > 0 ? (
+                  <WinLossBar wins={positionsSplit.wins} losses={positionsSplit.losses} />
+                ) : (
+                  <Sparkline
+                    data={tradeActivitySeries}
+                    ariaLabel="Trades opened per week"
+                  />
+                )
+              }
+              footer={
+                <span className="flex items-center justify-between">
+                  <span>Market value</span>
+                  <Money value={positionsMarketValue} className="text-muted-foreground" />
+                </span>
+              }
+            />
           </div>
 
           {/* Main Grid: Data Table + Trade Inspector Sidebar */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_400px] gap-4 lg:gap-6 flex-1 min-h-0 overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_400px] gap-4 lg:gap-6 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
             {/* Left Content Table */}
-            <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl flex flex-col min-h-0 h-full overflow-hidden shadow-sm">
-              {/* Header Controls */}
-              <div className="p-4 border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 bg-[#111218] shrink-0">
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setActiveTab('trades')}
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                      activeTab === 'trades'
-                        ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                    }`}
-                  >
-                    Trades & ROI History ({filteredTrades.length})
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('positions')}
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer ${
-                      activeTab === 'positions'
-                        ? 'bg-indigo-600 text-white shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
-                    }`}
-                  >
-                    Open Positions ({filteredPositions.length})
-                  </button>
-                </div>
+            <div className="bg-card ring-1 ring-border rounded-2xl flex flex-col overflow-hidden lg:min-h-0 lg:h-full">
+              <TableToolbar
+                activeTab={activeTab}
+                onTabChange={setActiveTab}
+                tradesCount={filteredTrades.length}
+                positionsCount={filteredPositions.length}
+                groupBy={groupBy}
+                onGroupByChange={setGroupBy}
+                search={searchFilter}
+                onSearchChange={setSearchFilter}
+              />
 
-                <div className="flex items-center gap-3">
-                  {/* Tastytrade Style Group By Control */}
-                  <div className="flex items-center bg-[#181a24] p-1 rounded-xl border border-slate-800 text-xs">
-                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400 px-2 flex items-center gap-1">
-                      <FolderTree className="w-3 h-3 text-indigo-400" />
-                      Group:
-                    </span>
-                    <button
-                      onClick={() => setGroupBy('strategy')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                        groupBy === 'strategy'
-                          ? 'bg-indigo-600 text-white shadow-sm font-semibold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Strategies / Chains
-                    </button>
-                    <button
-                      onClick={() => setGroupBy('flat')}
-                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
-                        groupBy === 'flat'
-                          ? 'bg-indigo-600 text-white shadow-sm font-semibold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Flat List
-                    </button>
-                  </div>
-
-                  <div className="relative w-56">
-                    <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-                    <Input
-                      placeholder="Search symbol, broker..."
-                      value={searchFilter}
-                      onChange={(e) => setSearchFilter(e.target.value)}
-                      className="bg-[#181a22] border-slate-800 text-slate-200 text-xs pl-8 h-9 rounded-lg"
+              {/*
+                One shared DataTable serves all four view combinations
+                (trades/positions x grouped/flat). These were previously four
+                hand-written table blocks totalling ~690 lines, with the same
+                header markup repeated 32 times.
+              */}
+              {activeTab === 'trades' ? (
+                <DataTable<Trade>
+                  caption={
+                    groupBy === 'strategy'
+                      ? 'Trades and ROI history, grouped by underlying and strategy'
+                      : 'Trades and ROI history'
+                  }
+                  columns={tradeColumns}
+                  rows={groupBy === 'flat' ? filteredTrades : undefined}
+                  groups={groupBy === 'strategy' ? groupedTrades : undefined}
+                  collapse={collapseState}
+                  selectedId={activeTradeId}
+                  onSelect={setActiveTradeId}
+                  loading={loading}
+                  className="min-h-0 flex-1"
+                  empty={
+                    <EmptyState
+                      variant={isFiltered ? 'no-results' : 'no-data'}
+                      title={isFiltered ? 'No trades match your search' : 'No trades synced yet'}
+                      body={
+                        isFiltered
+                          ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
+                          : 'Once a brokerage is linked and synced, your transaction history appears here.'
+                      }
+                      action={
+                        isFiltered
+                          ? { label: 'Clear search', onClick: () => setSearchFilter('') }
+                          : { label: 'Sync portfolio', onClick: handleRefresh }
+                      }
                     />
-                  </div>
-                </div>
-              </div>
-
-              {/* Table Body */}
-              <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto custom-scrollbar">
-                {activeTab === 'trades' ? (
-                  groupBy === 'strategy' ? (
-                    <table className="w-full border-collapse text-left">
-                      <thead className="sticky top-0 bg-[#161820] z-10 font-sans">
-                        <tr>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Strategy / Legs</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Qty / Type</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date / Expiry</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Trade P/L</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                        {loading ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
-                              Loading SnapTrade history...
-                            </td>
-                          </tr>
-                        ) : groupedTrades.length === 0 ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              No trades found matching the current filter.
-                            </td>
-                          </tr>
-                        ) : (
-                          groupedTrades.map((uGroup) => {
-                            const isUCollapsed = collapsedUnderlyings[uGroup.key];
-                            return (
-                              <React.Fragment key={`u-trade-${uGroup.key}`}>
-                                {/* Underlying Root Row */}
-                                <tr
-                                  onClick={() => toggleUnderlying(uGroup.key)}
-                                  className="bg-[#181a24] hover:bg-[#1f2230] cursor-pointer transition-colors border-t-2 border-slate-800"
-                                >
-                                  <td className="p-3">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-slate-400 hover:text-white transition-colors">
-                                        {isUCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                      </span>
-                                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]"></span>
-                                      <span className="font-extrabold text-white text-[14px] font-mono tracking-tight">
-                                        {uGroup.symbol}
-                                      </span>
-                                      {uGroup.futureCycle && (
-                                        <span className="bg-[#242838] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/40">
-                                          {uGroup.futureCycle}
-                                        </span>
-                                      )}
-                                      <span className="text-[10px] text-slate-400 font-sans font-medium ml-1">
-                                        ({uGroup.strategies.length} {uGroup.strategies.length === 1 ? 'strategy' : 'strategies'})
-                                      </span>
-                                    </div>
-                                  </td>
-                                  <td className="p-3 text-slate-400 font-sans text-xs">Chain</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className={`p-3 font-extrabold ${uGroup.totalRealizedProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {uGroup.totalRealizedProfit >= 0 ? '+' : ''}${uGroup.totalRealizedProfit.toFixed(2)}
-                                  </td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                </tr>
-
-                                {/* Strategies & Legs */}
-                                {!isUCollapsed && uGroup.strategies.map((strat) => {
-                                  const isStratCollapsed = collapsedStrategies[strat.id];
-                                  const stratMetrics = calculateStrategyMetrics(strat);
-                                  const stratProfit = stratMetrics ? stratMetrics.netProfit : strat.totalRealizedProfit;
-                                  const stratAvgROI = stratMetrics ? stratMetrics.avgROI : 0;
-                                  const stratPeakROI = stratMetrics ? stratMetrics.peakROI : 0;
-                                  const stratAnnROI = stratMetrics ? stratMetrics.annualizedROI : 0;
-                                  return (
-                                    <React.Fragment key={`strat-t-${strat.id}`}>
-                                      <tr
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setActiveTradeId(strat.items[0]?.id || strat.id);
-                                        }}
-                                        className="bg-[#14151e] hover:bg-slate-800/60 cursor-pointer transition-colors border-l-4 border-indigo-500/60"
-                                      >
-                                        <td className="p-2.5 pl-8">
-                                          <div className="flex items-center gap-2">
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                toggleStrategy(strat.id);
-                                              }}
-                                              className="text-slate-500 hover:text-slate-300 p-0.5"
-                                            >
-                                              {isStratCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                            </button>
-                                            <span className="w-2 h-2 rounded-full bg-purple-400/80"></span>
-                                            <span className="font-bold text-slate-100 text-[13px] font-sans tracking-wide">
-                                              {strat.strategyName}
-                                            </span>
-                                            {strat.expirationFormatted && (
-                                              <span className="text-[11px] text-slate-400 font-sans">
-                                                · {strat.expirationFormatted}
-                                              </span>
-                                            )}
-                                          </div>
-                                        </td>
-                                        <td className="p-2.5 font-sans text-slate-400 text-xs">
-                                          {strat.items[0]?.brokerName || 'Tastytrade'}
-                                        </td>
-                                        <td className="p-2.5 text-slate-300 font-semibold font-mono">
-                                          {strat.items.length} legs
-                                        </td>
-                                        <td className="p-2.5 text-slate-400 text-xs font-sans">
-                                          {strat.expirationFormatted || '-'}
-                                        </td>
-                                        <td className={`p-2.5 font-bold font-mono ${stratProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                          {stratProfit >= 0 ? '+' : ''}${stratProfit.toFixed(2)}
-                                        </td>
-                                        <td className="p-2.5 text-slate-300 font-mono">
-                                          {stratAvgROI >= 0 ? '+' : ''}{stratAvgROI.toFixed(1)}%
-                                        </td>
-                                        <td className="p-2.5 text-slate-300 font-mono">
-                                          {stratPeakROI >= 0 ? '+' : ''}{stratPeakROI.toFixed(1)}%
-                                        </td>
-                                        <td className="p-2.5 text-indigo-300 font-semibold font-mono">
-                                          {stratAnnROI.toFixed(1)}%
-                                        </td>
-                                      </tr>
-
-                                      {!isStratCollapsed && strat.items.map((trade) => {
-                                        const metrics = calculateROI(trade);
-                                        const isSelected = activeTradeId === trade.id;
-                                        const action = trade.details?.action || trade.type;
-                                        return (
-                                          <tr
-                                            key={`trade-leg-${trade.id}`}
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setActiveTradeId(trade.id);
-                                            }}
-                                            className={`bg-[#0f1016] hover:bg-slate-800/40 cursor-pointer transition-colors border-l-4 border-slate-700/30 ${
-                                              isSelected ? 'bg-indigo-600/15' : ''
-                                            }`}
-                                          >
-                                            <td className="p-2 pl-14">
-                                              <div className="flex items-center gap-2 text-xs">
-                                                <div className="flex items-center gap-1.5 bg-[#181a24] px-2.5 py-1 rounded-md border border-slate-800 text-[11px]">
-                                                  <span className={`font-mono font-bold ${
-                                                    action === 'STO' || action === 'STC' ? 'text-amber-400' : 'text-emerald-400'
-                                                  }`}>
-                                                    {action === 'STO' || action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
-                                                  </span>
-                                                  {trade.details?.expirationFormatted && (
-                                                    <span className="text-slate-300 font-medium">{trade.details.expirationFormatted}</span>
-                                                  )}
-                                                  {trade.details?.strikeFormatted && (
-                                                    <span className="font-mono font-bold text-white ml-1">{trade.details.strikeFormatted}</span>
-                                                  )}
-                                                  {trade.details?.optionTypeShort && (
-                                                    <span className={`px-1 rounded text-[10px] font-bold ${
-                                                      trade.details.optionTypeShort === 'P' ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'
-                                                    }`}>
-                                                      {trade.details.optionTypeShort}
-                                                    </span>
-                                                  )}
-                                                </div>
-                                              </div>
-                                            </td>
-                                            <td className="p-2 text-slate-500 text-xs font-sans">{trade.brokerName}</td>
-                                            <td className="p-2 font-sans text-xs">
-                                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                                                action === 'BTO' || action === 'Buy' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30' :
-                                                action === 'STO' || action === 'Sell' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30' :
-                                                action === 'BTC' ? 'bg-cyan-500/10 text-cyan-400 border border-cyan-500/30' :
-                                                action === 'STC' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30' :
-                                                'bg-slate-800 text-slate-300 border border-slate-700'
-                                              }`}>
-                                                {action} {trade.quantity}
-                                              </span>
-                                            </td>
-                                            <td className="p-2 text-slate-400 text-xs font-sans">{formatTradeDateTime(trade.date)}</td>
-                                            <td className="p-2">
-                                              <div className="flex flex-col">
-                                                <span className={`font-bold font-mono ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                                  {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
-                                                </span>
-                                                {trade.fees ? (
-                                                  <span className="text-[9px] text-slate-500 font-sans">
-                                                    -${trade.fees.toFixed(2)} fee
-                                                  </span>
-                                                ) : null}
-                                              </div>
-                                            </td>
-                                            <td className="p-2 text-slate-300 font-mono">{metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}</td>
-                                            <td className="p-2 text-slate-300 font-mono">{metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}</td>
-                                            <td className="p-2 text-indigo-300 font-semibold font-mono">{metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}</td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </React.Fragment>
-                                  );
-                                })}
-                              </React.Fragment>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  ) : (
-                    /* Flat Table for Trades */
-                    <table className="w-full border-collapse text-left">
-                      <thead className="sticky top-0 bg-[#161820] z-10">
-                        <tr>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Type</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Date</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Trade P/L</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cap ROI</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Peak ROI</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Ann. ROI</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                        {loading ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
-                              Loading SnapTrade history...
-                            </td>
-                          </tr>
-                        ) : filteredTrades.length === 0 ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              No trades found matching the current filter.
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredTrades.map((trade) => {
-                            const metrics = calculateROI(trade);
-                            const isSelected = activeTradeId === trade.id;
-                            const action = trade.details?.action || trade.type;
-                            return (
-                              <tr
-                                key={trade.id}
-                                onClick={() => setActiveTradeId(trade.id)}
-                                className={`cursor-pointer transition-colors ${
-                                  isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
-                                }`}
-                              >
-                                <td className="p-3.5">
-                                  <div className="flex flex-col gap-1">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="font-bold text-white tracking-tight font-mono text-[13px]">
-                                        {trade.details?.rootSymbol || trade.symbol}
-                                      </span>
-                                      {trade.details?.futureCycle && (
-                                        <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
-                                          {trade.details.futureCycle}
-                                        </span>
-                                      )}
-                                      {trade.details?.isOption && (
-                                        <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
-                                          {trade.details.isFuture ? 'Fut Opt' : 'Option'}
-                                        </span>
-                                      )}
-                                    </div>
-                                    {trade.details?.isOption && (
-                                      <div className="flex items-center gap-1.5 text-[11px]">
-                                        <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
-                                          trade.details.action === 'STO' || trade.details.action === 'STC'
-                                            ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                                            : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                                        }`}>
-                                          {trade.details.action === 'STO' || trade.details.action === 'STC' ? `-${trade.quantity}` : `+${trade.quantity}`}
-                                        </span>
-                                        {trade.details.expirationFormatted && (
-                                          <span className="text-slate-200 font-medium">{trade.details.expirationFormatted}</span>
-                                        )}
-                                        {trade.status === 'Open' ? (
-                                          <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.2 rounded font-mono font-semibold border border-emerald-500/30">
-                                            {trade.details.daysLeftFormatted || `${trade.details.dte}d`}
-                                          </span>
-                                        ) : (
-                                          trade.details.dte !== undefined && (
-                                            <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.2 rounded font-mono border border-slate-700/50">
-                                              {trade.details.dte}d
-                                            </span>
-                                          )
-                                        )}
-                                        {trade.details.strikeFormatted && (
-                                          <span className="font-mono font-bold text-slate-100">{trade.details.strikeFormatted}</span>
-                                        )}
-                                        {trade.details.optionTypeShort && (
-                                          <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                                            trade.details.optionTypeShort === 'P'
-                                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                              : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                          }`}>
-                                            {trade.details.optionTypeShort}
-                                          </span>
-                                        )}
-                                      </div>
-                                    )}
-                                  </div>
-                                </td>
-                                <td className="p-3.5 font-sans">
-                                  <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
-                                    {trade.brokerName}
-                                  </span>
-                                </td>
-                                <td className="p-3.5">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className={`px-2 py-0.5 rounded text-[11px] font-bold tracking-wide border ${
-                                      action === 'BTO' || action === 'Buy'
-                                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                                        : action === 'STO' || action === 'Sell'
-                                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                                        : action === 'BTC'
-                                        ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
-                                        : action === 'STC'
-                                        ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
-                                        : action === 'EXPIRED'
-                                        ? 'bg-slate-800 text-slate-400 border-slate-700'
-                                        : 'bg-slate-800 text-slate-300 border-slate-700'
-                                    }`}>
-                                      {action} {trade.quantity}
-                                    </span>
-                                    {trade.status === 'Open' && (
-                                      <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
-                                        OPEN
-                                      </span>
-                                    )}
-                                  </div>
-                                </td>
-                                <td className="p-3.5 text-slate-400 text-xs font-sans">
-                                  {formatTradeDateTime(trade.date)}
-                                </td>
-                                <td className="p-3.5">
-                                  <div className="flex flex-col">
-                                    <div className="flex items-center gap-1.5">
-                                      <span className={`font-bold ${metrics && metrics.profit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        {metrics ? `${metrics.profit >= 0 ? '+' : ''}$${metrics.profit.toFixed(2)}` : '-'}
-                                      </span>
-                                      <span className={`text-[9px] font-sans px-1.5 py-0.2 rounded font-semibold ${
-                                        trade.status === 'Open'
-                                          ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/20'
-                                          : 'text-slate-400 bg-slate-800 border border-slate-700/50'
-                                      }`}>
-                                        {trade.status === 'Open' ? 'Open' : 'Realized'}
-                                      </span>
-                                    </div>
-                                    {trade.fees ? (
-                                      <span className="text-[10px] text-slate-500 font-sans">
-                                        -${trade.fees.toFixed(2)} fee
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                </td>
-                                <td className="p-3.5 text-slate-300">
-                                  {metrics ? `${metrics.avgROI.toFixed(1)}%` : '-'}
-                                </td>
-                                <td className="p-3.5 text-slate-300">
-                                  {metrics ? `${metrics.peakROI.toFixed(1)}%` : '-'}
-                                </td>
-                                <td className="p-3.5 text-indigo-300 font-semibold">
-                                  {metrics ? `${metrics.annualizedROI.toFixed(1)}%` : '-'}
-                                </td>
-                              </tr>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  )
-                ) : (
-                  groupBy === 'strategy' ? (
-                    /* Grouped Table for Open Positions */
-                    <table className="w-full border-collapse text-left">
-                      <thead className="sticky top-0 bg-[#161820] z-10 font-sans">
-                        <tr>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Strategy / Contract</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Days Left / Expiry</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Open P/L</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                        {loading ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              <Activity className="w-6 h-6 animate-spin text-indigo-400 mx-auto mb-2" />
-                              Loading open positions...
-                            </td>
-                          </tr>
-                        ) : groupedPositions.length === 0 ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              No open positions found.
-                            </td>
-                          </tr>
-                        ) : (
-                          groupedPositions.map((uGroup) => {
-                            const isUCollapsed = collapsedUnderlyings[uGroup.key];
-                            return (
-                              <React.Fragment key={`u-pos-${uGroup.key}`}>
-                                {/* 1. Underlying Header Row (e.g. /MNQU6, /MESU6, TSLA) */}
-                                <tr
-                                  onClick={() => toggleUnderlying(uGroup.key)}
-                                  className="bg-[#181a24] hover:bg-[#1f2230] cursor-pointer transition-colors border-t-2 border-slate-800"
-                                >
-                                  <td className="p-3">
-                                    <div className="flex items-center gap-2">
-                                      <span className="text-slate-400 hover:text-white transition-colors">
-                                        {isUCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                      </span>
-                                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 shadow-[0_0_8px_rgba(99,102,241,0.5)]"></span>
-                                      <span className="font-extrabold text-white text-[14px] font-mono tracking-tight">
-                                        {uGroup.symbol}
-                                      </span>
-                                      {uGroup.futureCycle && (
-                                        <span className="bg-[#242838] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/40">
-                                          {uGroup.futureCycle}
-                                        </span>
-                                      )}
-                                      <span className="text-[10px] text-slate-400 font-sans font-medium ml-1">
-                                        ({uGroup.strategies.length} {uGroup.strategies.length === 1 ? 'strategy' : 'strategies'})
-                                      </span>
-                                    </div>
-                                  </td>
-                                  <td className="p-3 text-slate-400 font-sans text-xs">Multi-Leg Chain</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 text-slate-400">-</td>
-                                  <td className="p-3 font-bold text-slate-200">${uGroup.totalValue.toFixed(2)}</td>
-                                  <td className={`p-3 font-extrabold ${uGroup.totalOpenPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                    {uGroup.totalOpenPnl >= 0 ? '+' : ''}${uGroup.totalOpenPnl.toFixed(2)}
-                                  </td>
-                                </tr>
-
-                                {/* 2. Nested Strategies & Legs */}
-                                {!isUCollapsed && uGroup.strategies.map((strat) => {
-                                  const isStratCollapsed = collapsedStrategies[strat.id];
-                                  const isStratSelected = activeTradeId === strat.id || activeStrategy?.id === strat.id;
-                                  return (
-                                    <React.Fragment key={`strat-p-${strat.id}`}>
-                                      {/* Strategy Sub-Header Row (e.g. Ratio, Futures Option, Vertical) */}
-                                      <tr
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          setActiveTradeId(strat.items[0]?.id || strat.id);
-                                        }}
-                                        className={`bg-[#14151e] hover:bg-slate-800/60 cursor-pointer transition-colors border-l-4 border-indigo-500/60 ${
-                                          isStratSelected ? 'bg-indigo-950/30' : ''
-                                        }`}
-                                      >
-                                        <td className="p-2.5 pl-8">
-                                          <div className="flex items-center gap-2">
-                                            <button
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                toggleStrategy(strat.id);
-                                              }}
-                                              className="text-slate-500 hover:text-slate-300 p-0.5"
-                                            >
-                                              {isStratCollapsed ? <ChevronRight className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-                                            </button>
-                                            <span className="w-2 h-2 rounded-full bg-purple-400/80"></span>
-                                            <span className="font-bold text-slate-100 text-[13px] font-sans tracking-wide">
-                                              {strat.strategyName}
-                                            </span>
-                                            {strat.expirationFormatted && (
-                                              <span className="text-[11px] text-slate-400 font-sans">
-                                                · {strat.expirationFormatted}
-                                              </span>
-                                            )}
-                                          </div>
-                                        </td>
-                                        <td className="p-2.5 font-sans text-slate-400 text-xs">
-                                          {strat.items[0]?.brokerName || 'Tastytrade'}
-                                        </td>
-                                        <td className="p-2.5 text-slate-300 font-semibold font-mono">
-                                          {strat.totalQuantity > 0 ? `+${strat.totalQuantity}` : strat.totalQuantity}
-                                        </td>
-                                        <td className="p-2.5">
-                                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                                            {strat.daysLeftFormatted || (strat.dte !== undefined ? `${strat.dte}d left` : '-')}
-                                          </span>
-                                        </td>
-                                        <td className="p-2.5 text-slate-400 font-mono">
-                                          ${Math.abs(strat.netCostBasis).toFixed(2)}
-                                        </td>
-                                        <td className="p-2.5 text-slate-300 font-mono font-semibold">
-                                          ${Math.abs(strat.netCurrentPrice).toFixed(2)}
-                                        </td>
-                                        <td className="p-2.5 font-bold text-white font-mono">
-                                          ${strat.totalValue.toFixed(2)}
-                                        </td>
-                                        <td className={`p-2.5 font-bold font-mono ${strat.totalOpenPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                          {strat.totalOpenPnl >= 0 ? '+' : ''}${strat.totalOpenPnl.toFixed(2)}
-                                        </td>
-                                      </tr>
-
-                                      {/* 3. Individual Strategy Legs */}
-                                      {!isStratCollapsed && strat.items.map((pos) => {
-                                        const isLegSelected = activeTradeId === pos.id;
-                                        return (
-                                          <tr
-                                            key={`pos-leg-${pos.id}`}
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              setActiveTradeId(pos.id);
-                                            }}
-                                            className={`bg-[#0f1016] hover:bg-slate-800/40 cursor-pointer transition-colors border-l-4 border-slate-700/30 ${
-                                              isLegSelected ? 'bg-indigo-600/15' : ''
-                                            }`}
-                                          >
-                                            <td className="p-2 pl-14">
-                                              <div className="flex items-center gap-2 text-xs">
-                                                <div className="flex items-center gap-1.5 bg-[#181a24] px-2.5 py-1 rounded-md border border-slate-800 text-[11px]">
-                                                  <span className={`font-mono font-bold ${
-                                                    pos.quantity < 0 ? 'text-amber-400' : 'text-emerald-400'
-                                                  }`}>
-                                                    {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
-                                                  </span>
-                                                  {pos.details?.expirationFormatted && (
-                                                    <span className="text-slate-300 font-medium">{pos.details.expirationFormatted}</span>
-                                                  )}
-                                                  {pos.details?.daysLeftFormatted && (
-                                                    <span className="text-[10px] text-slate-400 font-mono">
-                                                      {pos.details.daysLeftFormatted}
-                                                    </span>
-                                                  )}
-                                                  {pos.details?.strikeFormatted && (
-                                                    <span className="font-mono font-bold text-white ml-1">
-                                                      {pos.details.strikeFormatted}
-                                                    </span>
-                                                  )}
-                                                  {pos.details?.optionTypeShort && (
-                                                    <span className={`px-1 rounded text-[10px] font-bold ${
-                                                      pos.details.optionTypeShort === 'P'
-                                                        ? 'bg-amber-500/20 text-amber-300'
-                                                        : 'bg-emerald-500/20 text-emerald-300'
-                                                    }`}>
-                                                      {pos.details.optionTypeShort}
-                                                    </span>
-                                                  )}
-                                                </div>
-                                              </div>
-                                            </td>
-                                            <td className="p-2 text-slate-500 text-xs font-sans">{pos.brokerName}</td>
-                                            <td className="p-2 text-slate-300 font-semibold font-mono">
-                                              {pos.quantity > 0 ? `+${pos.quantity}` : pos.quantity}
-                                            </td>
-                                            <td className="p-2 text-slate-400 font-mono text-[11px]">
-                                              {pos.details?.expirationFormatted || '-'}
-                                            </td>
-                                            <td className="p-2 text-slate-400 font-mono">${(pos.averagePrice || 0).toFixed(2)}</td>
-                                            <td className="p-2 text-slate-300 font-mono">${(pos.currentPrice || 0).toFixed(2)}</td>
-                                            <td className="p-2 text-slate-300 font-mono">${(pos.totalValue || 0).toFixed(2)}</td>
-                                            <td className={`p-2 font-mono font-semibold ${
-                                              (pos.openPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                                            }`}>
-                                              {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
-                                            </td>
-                                          </tr>
-                                        );
-                                      })}
-                                    </React.Fragment>
-                                  );
-                                })}
-                              </React.Fragment>
-                            );
-                          })
-                        )}
-                      </tbody>
-                    </table>
-                  ) : (
-                    /* Flat Table for Open Positions */
-                    <table className="w-full border-collapse text-left">
-                      <thead className="sticky top-0 bg-[#161820] z-10">
-                        <tr>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Symbol / Contract</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Broker</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Quantity</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Days Left / Expiry</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Avg Cost</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Current Price</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Market Value</th>
-                          <th className="p-3.5 text-[11px] uppercase tracking-wider text-slate-400 border-b border-slate-800">Open P/L</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 font-mono text-xs">
-                        {filteredPositions.length === 0 ? (
-                          <tr>
-                            <td colSpan={8} className="text-center p-12 text-slate-500 font-sans">
-                              No open positions found.
-                            </td>
-                          </tr>
-                        ) : (
-                          filteredPositions.map((pos) => {
-                            const isSelected = activeTradeId === pos.id;
-                            return (
-                              <tr 
-                                key={pos.id} 
-                                onClick={() => setActiveTradeId(pos.id)}
-                                className={`cursor-pointer transition-colors ${
-                                  isSelected ? 'bg-indigo-600/15' : 'hover:bg-slate-800/40'
-                                }`}
-                              >
-                              <td className="p-3.5">
-                                <div className="flex flex-col gap-1">
-                                  <div className="flex items-center gap-1.5 font-sans">
-                                    <span className="font-bold text-white tracking-tight font-mono text-[13px]">
-                                      {pos.details?.rootSymbol || pos.symbol}
-                                    </span>
-                                    {pos.details?.futureCycle && (
-                                      <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
-                                        {pos.details.futureCycle}
-                                      </span>
-                                    )}
-                                    {pos.details?.isOption && (
-                                      <span className="text-[9px] uppercase tracking-wider text-indigo-400 font-semibold bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
-                                        {pos.details.isFuture ? 'Fut Opt' : 'Option'}
-                                      </span>
-                                    )}
-                                  </div>
-                                  {pos.details?.isOption && (
-                                    <div className="flex items-center gap-1.5 text-[11px]">
-                                      <span className={`px-1.5 py-0.2 rounded font-mono text-[10px] font-semibold border ${
-                                        pos.quantity < 0
-                                          ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                                          : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                                      }`}>
-                                        {pos.quantity > 0 ? `+${pos.quantity}` : `${pos.quantity}`}
-                                      </span>
-                                      {pos.details.expirationFormatted && (
-                                        <span className="text-slate-200 font-medium">{pos.details.expirationFormatted}</span>
-                                      )}
-                                      {pos.details.strikeFormatted && (
-                                        <span className="font-mono font-bold text-slate-100">{pos.details.strikeFormatted}</span>
-                                      )}
-                                      {pos.details.optionTypeShort && (
-                                        <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
-                                          pos.details.optionTypeShort === 'P'
-                                            ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                            : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                        }`}>
-                                          {pos.details.optionTypeShort}
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              </td>
-                              <td className="p-3.5 font-sans">
-                                <span className="bg-slate-800/80 text-slate-300 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-700/50">
-                                  {pos.brokerName}
-                                </span>
-                              </td>
-                              <td className="p-3.5 text-slate-300 font-semibold">{pos.quantity > 0 ? `+${pos.quantity}` : pos.quantity}</td>
-                              <td className="p-3.5">
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
-                                  {pos.details?.daysLeftFormatted || (pos.details?.dte !== undefined ? `${pos.details.dte}d left` : 'Active')}
-                                  {pos.details?.expirationFormatted && (
-                                    <span className="text-emerald-300/80 font-normal">({pos.details.expirationFormatted})</span>
-                                  )}
-                                </span>
-                              </td>
-                              <td className="p-3.5 text-slate-400">${(pos.averagePrice || 0).toFixed(2)}</td>
-                              <td className="p-3.5 text-slate-200 font-semibold">${(pos.currentPrice || 0).toFixed(2)}</td>
-                              <td className="p-3.5 font-bold text-white">${(pos.totalValue || 0).toFixed(2)}</td>
-                              <td className={`p-3.5 font-bold ${(pos.openPnl || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                {(pos.openPnl || 0) >= 0 ? '+' : ''}${(pos.openPnl || 0).toFixed(2)}
-                              </td>
-                            </tr>
-                          );
-                        })
-                      )}
-                      </tbody>
-                    </table>
-                  )
-                )}
-              </div>
+                  }
+                />
+              ) : (
+                <DataTable<Position>
+                  caption={
+                    groupBy === 'strategy'
+                      ? 'Open positions, grouped by underlying and strategy'
+                      : 'Open positions'
+                  }
+                  columns={positionColumns}
+                  rows={groupBy === 'flat' ? filteredPositions : undefined}
+                  groups={groupBy === 'strategy' ? groupedPositions : undefined}
+                  collapse={collapseState}
+                  selectedId={activeTradeId}
+                  onSelect={setActiveTradeId}
+                  loading={loading}
+                  className="min-h-0 flex-1"
+                  empty={
+                    <EmptyState
+                      variant={isFiltered ? 'no-results' : 'no-data'}
+                      title={isFiltered ? 'No positions match your search' : 'No open positions'}
+                      body={
+                        isFiltered
+                          ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
+                          : 'Open positions reported by your linked brokerages will appear here.'
+                      }
+                      action={
+                        isFiltered
+                          ? { label: 'Clear search', onClick: () => setSearchFilter('') }
+                          : { label: 'Sync portfolio', onClick: handleRefresh }
+                      }
+                    />
+                  }
+                />
+              )}
             </div>
 
             {/* Right Sidebar: Detailed Trade Inspector */}
-            <aside className="flex flex-col min-h-0 h-full overflow-hidden">
-              <div className="bg-[#13141a] border border-slate-800/80 rounded-2xl p-6 shadow-sm flex-1 flex flex-col min-h-0 overflow-y-auto custom-scrollbar">
+            <aside className="flex flex-col lg:min-h-0 lg:h-full lg:overflow-hidden">
+              <div className="bg-card ring-1 ring-border rounded-2xl p-6 flex flex-col lg:flex-1 lg:min-h-0 lg:overflow-y-auto custom-scrollbar">
                 <div>
-                  <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-5">
-                    <span className="text-sm font-bold text-white">Trade & Strategy Inspector</span>
+                  <div className="flex items-center justify-between pb-3 border-b border-border/80 mb-5">
+                    <span className="text-sm font-bold text-foreground">Trade & Strategy Inspector</span>
                   </div>
 
                   {activeTrade && activeMetrics ? (
@@ -2783,25 +2012,25 @@ export default function App() {
                       <div className="mb-4">
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
-                            <span className="text-lg font-bold text-white font-mono">
+                            <span className="text-lg font-bold text-foreground font-mono">
                               {activeTrade.details?.rootSymbol || activeTrade.symbol}
                             </span>
                             {activeTrade.details?.futureCycle && (
-                              <span className="bg-[#1f2430] text-indigo-300 font-mono text-xs font-bold px-2 py-0.5 rounded border border-indigo-500/30">
+                              <span className="bg-surface-3 text-brand font-mono text-xs font-bold px-2 py-0.5 rounded border border-brand/30">
                                 {activeTrade.details.futureCycle}
                               </span>
                             )}
                             {activeStrategy && (
-                              <span className="bg-purple-500/15 text-purple-300 font-sans text-xs font-bold px-2 py-0.5 rounded border border-purple-500/30">
+                              <span className="bg-strategy/15 text-strategy font-sans text-xs font-bold px-2 py-0.5 rounded border border-strategy/30">
                                 {activeStrategy.strategyName}
                               </span>
                             )}
                           </div>
-                          <span className="bg-slate-800 text-slate-300 px-2.5 py-0.5 rounded text-[11px] font-medium border border-slate-700">
+                          <span className="bg-surface-3 text-muted-foreground px-2.5 py-0.5 rounded text-[11px] font-medium border border-border">
                             {activeTrade.brokerName}
                           </span>
                         </div>
-                        <div className="text-[11px] text-slate-400 mt-1 font-sans">
+                        <div className="text-[11px] text-muted-foreground mt-1 font-sans">
                           {activeStrategy 
                             ? `${activeStrategy.strategyName} (${activeStrategy.items.length} ${activeStrategy.items.length === 1 ? 'leg' : 'legs'} · ${activeStrategy.expirationFormatted || 'Active'})`
                             : activeTrade.details?.isOption 
@@ -2812,27 +2041,27 @@ export default function App() {
 
                       {/* View Switcher if Multi-Leg Strategy */}
                       {activeStrategy && activeStrategy.items.length > 1 && (
-                        <div className="flex items-center bg-[#0e0f14] p-1 rounded-xl border border-slate-800/80 mb-4 text-xs font-sans">
+                        <div className="flex items-center bg-surface-0 p-1 rounded-xl border border-border/80 mb-4 text-xs font-sans">
                           <button
                             onClick={() => setInspectorMode('strategy')}
                             className={`flex-1 py-1.5 px-2.5 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5 ${
                               inspectorMode === 'strategy'
-                                ? 'bg-purple-600/25 text-purple-200 border border-purple-500/40 shadow-sm'
-                                : 'text-slate-400 hover:text-slate-200'
+                                ? 'bg-strategy/25 text-strategy border border-strategy/40 shadow-sm'
+                                : 'text-muted-foreground hover:text-foreground'
                             }`}
                           >
-                            <Layers className="w-3.5 h-3.5 text-purple-400" />
+                            <Layers className="w-3.5 h-3.5 text-strategy" />
                             <span>Whole Strategy ({activeStrategy.items.length} legs)</span>
                           </button>
                           <button
                             onClick={() => setInspectorMode('leg')}
                             className={`flex-1 py-1.5 px-2.5 rounded-lg font-bold text-xs transition-all flex items-center justify-center gap-1.5 ${
                               inspectorMode === 'leg'
-                                ? 'bg-indigo-600/25 text-indigo-200 border border-indigo-500/40 shadow-sm'
-                                : 'text-slate-400 hover:text-slate-200'
+                                ? 'bg-brand-fill/25 text-brand border border-brand/40 shadow-sm'
+                                : 'text-muted-foreground hover:text-foreground'
                             }`}
                           >
-                            <TrendingUp className="w-3.5 h-3.5 text-indigo-400" />
+                            <TrendingUp className="w-3.5 h-3.5 text-brand" />
                             <span>Selected Leg</span>
                           </button>
                         </div>
@@ -2840,14 +2069,14 @@ export default function App() {
 
                       {/* Multi-Leg Strategy Breakdown Card if strategy has > 1 leg */}
                       {activeStrategy && activeStrategy.items.length > 1 && (
-                        <div className="bg-[#181a24] border border-purple-500/30 rounded-xl p-3 mb-4 font-sans">
-                          <div className="flex items-center justify-between text-[11px] text-slate-300 mb-2 border-b border-slate-800/80 pb-1.5">
+                        <div className="bg-surface-2 border border-strategy/30 rounded-xl p-3 mb-4 font-sans">
+                          <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2 border-b border-border/80 pb-1.5">
                             <div className="flex items-center gap-1.5">
-                              <span className="w-2 h-2 rounded-full bg-purple-400"></span>
-                              <span className="font-bold text-purple-300">{activeStrategy.strategyName} Multi-Leg Structure</span>
+                              <span className="w-2 h-2 rounded-full bg-strategy"></span>
+                              <span className="font-bold text-strategy">{activeStrategy.strategyName} Multi-Leg Structure</span>
                             </div>
-                            <span className={`font-mono font-bold ${(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                              {(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl) >= 0 ? '+' : ''}${(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl).toFixed(2)}
+                            <span className={`font-mono font-bold ${(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                              <PnL value={strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl} />
                             </span>
                           </div>
                           <div className="space-y-1.5 text-xs font-mono">
@@ -2870,21 +2099,21 @@ export default function App() {
                                     }
                                   }}
                                   className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors ${
-                                    isThisLeg ? 'bg-indigo-600/25 border border-indigo-500/40 text-white' : 'hover:bg-slate-800/60 text-slate-300'
+                                    isThisLeg ? 'bg-brand-fill/25 border border-brand/40 text-foreground' : 'hover:bg-surface-3/60 text-muted-foreground'
                                   }`}
                                 >
                                   <div className="flex items-center gap-2">
-                                    <span className={`font-bold ${legAction === 'STO' || legAction === 'STC' || legQty < 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                                    <span className={`font-bold ${legAction === 'STO' || legAction === 'STC' || legQty < 0 ? 'text-warning' : 'text-profit'}`}>
                                       {signedQtyDisplay}
                                     </span>
                                     <span>{item.details?.strikeFormatted} {item.details?.optionTypeShort}</span>
-                                    <span className="text-[10px] text-slate-400">{item.details?.expirationFormatted}</span>
+                                    <span className="text-[10px] text-muted-foreground">{item.details?.expirationFormatted}</span>
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    <span className="text-slate-400">${(item.currentPrice || item.price || 0).toFixed(2)}</span>
+                                    <span className="text-muted-foreground">{<Money value={(item.currentPrice || item.price || 0)} />}</span>
                                     {itemPnl !== undefined && (
-                                      <span className={`font-bold ${itemPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                        {itemPnl >= 0 ? '+' : ''}${itemPnl.toFixed(2)}
+                                      <span className={`font-bold ${itemPnl >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                        <PnL value={itemPnl} size="sm" />
                                       </span>
                                     )}
                                   </div>
@@ -2897,71 +2126,71 @@ export default function App() {
 
                       {/* Selected Leg Pill Badge Card (When in Leg View or Single Leg Strategy) */}
                       {(inspectorMode === 'leg' || !activeStrategy || activeStrategy.items.length <= 1) && activeTrade.details?.isOption && (
-                        <div className="bg-[#181a22] border border-slate-800/90 rounded-xl p-3 mb-4 font-sans">
-                          <div className="flex items-center justify-between text-[11px] text-slate-400 mb-2.5 border-b border-slate-800 pb-2">
+                        <div className="bg-surface-2 border border-border/90 rounded-xl p-3 mb-4 font-sans">
+                          <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2.5 border-b border-border pb-2">
                             <div className="flex items-center gap-2">
-                              <span className="font-semibold text-slate-300">Selected Contract Leg</span>
+                              <span className="font-semibold text-muted-foreground">Selected Contract Leg</span>
                               {activeTrade.status === 'Open' ? (
-                                <span className="bg-emerald-500/20 text-emerald-300 text-[9px] px-1.5 py-0.5 rounded font-bold border border-emerald-500/40">
+                                <span className="bg-profit/20 text-profit text-[9px] px-1.5 py-0.5 rounded font-bold border border-profit/40">
                                   OPEN
                                 </span>
                               ) : (
-                                <span className="bg-slate-800 text-slate-400 text-[9px] px-1.5 py-0.5 rounded font-medium border border-slate-700">
+                                <span className="bg-surface-3 text-muted-foreground text-[9px] px-1.5 py-0.5 rounded font-medium border border-border">
                                   CLOSED
                                 </span>
                               )}
                             </div>
-                            <span className="font-mono text-emerald-400 font-bold">
-                              ${(activeTrade.price || 0).toFixed(2)}
+                            <span className="font-mono text-profit font-bold">
+                              {<Money value={(activeTrade.price || 0)} />}
                             </span>
                           </div>
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-1.5 flex-wrap">
                               {activeTrade.details.futureCycle && (
-                                <span className="bg-[#1f2430] text-indigo-300 font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-indigo-500/30">
+                                <span className="bg-surface-3 text-brand font-mono text-[11px] font-bold px-1.5 py-0.5 rounded border border-brand/30">
                                   {activeTrade.details.futureCycle}
                                 </span>
                               )}
                               <span className={`px-1.5 py-0.5 rounded text-[11px] font-mono font-semibold border ${
                                 activeTrade.details.action === 'STO' || activeTrade.details.action === 'STC'
-                                  ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                                  : 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                  ? 'bg-warning/10 text-warning border-warning/30'
+                                  : 'bg-profit/10 text-profit border-profit/30'
                               }`}>
                                 {activeTrade.details.action === 'STO' || activeTrade.details.action === 'STC' ? `-${activeTrade.quantity}` : `+${activeTrade.quantity}`}
                               </span>
-                              <span className="text-slate-200 text-xs font-medium">
+                              <span className="text-foreground text-xs font-medium">
                                 {activeTrade.details.expirationFormatted}
                               </span>
                               {activeTrade.status === 'Open' ? (
-                                <span className="text-[10px] text-emerald-400 bg-emerald-500/15 px-1.5 py-0.5 rounded font-mono font-semibold border border-emerald-500/30">
+                                <span className="text-[10px] text-profit bg-profit/15 px-1.5 py-0.5 rounded font-mono font-semibold border border-profit/30">
                                   {activeTrade.details.daysLeftFormatted || `${activeTrade.details.dte}d left`}
                                 </span>
                               ) : (
                                 activeTrade.details.dte !== undefined && (
-                                  <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">
+                                  <span className="text-[10px] text-muted-foreground bg-surface-3 px-1.5 py-0.5 rounded font-mono">
                                     {activeTrade.details.dte}d
                                   </span>
                                 )
                               )}
-                              <span className="font-mono text-xs font-bold text-white">
+                              <span className="font-mono text-xs font-bold text-foreground">
                                 {activeTrade.details.strikeFormatted}
                               </span>
                               {activeTrade.details.optionTypeShort && (
                                 <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${
                                   activeTrade.details.optionTypeShort === 'P'
-                                    ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    ? 'bg-warning/20 text-warning border border-warning/30'
+                                    : 'bg-profit/20 text-profit border border-profit/30'
                                 }`}>
                                   {activeTrade.details.optionTypeShort} ({activeTrade.details.optionType})
                                 </span>
                               )}
                             </div>
                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold tracking-wider ${
-                              activeTrade.details.action === 'BTO' ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30' :
-                              activeTrade.details.action === 'STO' ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30' :
-                              activeTrade.details.action === 'BTC' ? 'bg-cyan-500/15 text-cyan-400 border border-cyan-500/30' :
-                              activeTrade.details.action === 'STC' ? 'bg-rose-500/15 text-rose-400 border border-rose-500/30' :
-                              'bg-slate-800 text-slate-300 border border-slate-700'
+                              activeTrade.details.action === 'BTO' ? 'bg-profit/15 text-profit border border-profit/30' :
+                              activeTrade.details.action === 'STO' ? 'bg-warning/15 text-warning border border-warning/30' :
+                              activeTrade.details.action === 'BTC' ? 'bg-info/15 text-info border border-info/30' :
+                              activeTrade.details.action === 'STC' ? 'bg-loss/15 text-loss border border-loss/30' :
+                              'bg-surface-3 text-muted-foreground border border-border'
                             }`}>
                               {activeTrade.details.action}
                             </span>
@@ -2969,171 +2198,186 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* ROI Statistics Hero Cards */}
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
-                          <div className={`text-xl font-bold font-mono mb-1 ${
-                            (inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.avgROI : (activeMetrics.avgROI || 0)) >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                          }`}>
-                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.avgROI : (activeMetrics.avgROI || 0)) >= 0 ? '+' : ''}
-                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.avgROI : (activeMetrics.avgROI || 0)).toFixed(1)}%
-                          </div>
-                          <div className="text-[10px] uppercase font-medium text-slate-400 flex items-center justify-center gap-1">
-                            {inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                            )}
-                            <span>{inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 ? 'Strategy Avg ROI' : 'Avg Capital ROI'}</span>
-                          </div>
-                        </div>
+                      {/* ROI hero tiles + capital-efficiency meter */}
+                      {(() => {
+                        const isStrategyView =
+                          inspectorMode === 'strategy' && !!strategyMetrics && !!activeStrategy && activeStrategy.items.length > 1;
+                        const avgROI = isStrategyView ? strategyMetrics!.avgROI : activeMetrics.avgROI || 0;
+                        const peakROI = isStrategyView ? strategyMetrics!.peakROI : activeMetrics.peakROI || 0;
+                        const annROI = isStrategyView ? strategyMetrics!.annualizedROI : activeMetrics.annualizedROI || 0;
+                        const avgCap = isStrategyView ? strategyMetrics!.totalAvgCapital : activeMetrics.avgCapital || 0;
+                        const peakCap = isStrategyView ? strategyMetrics!.totalPeakCapital : activeMetrics.peakCap || 0;
 
-                        <div className="bg-[#181a22] border border-slate-800/80 p-4 rounded-xl text-center">
-                          <div className={`text-xl font-bold font-mono mb-1 ${
-                            (inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.peakROI : (activeMetrics.peakROI || 0)) >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                          }`}>
-                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.peakROI : (activeMetrics.peakROI || 0)) >= 0 ? '+' : ''}
-                            {(inspectorMode === 'strategy' && strategyMetrics ? strategyMetrics.peakROI : (activeMetrics.peakROI || 0)).toFixed(1)}%
+                        return (
+                          <div className="space-y-3">
+                            <div className="grid grid-cols-2 gap-3">
+                              {[
+                                { label: isStrategyView ? 'Strategy Avg ROI' : 'Avg Capital ROI', value: avgROI },
+                                { label: isStrategyView ? 'Strategy Peak ROI' : 'Peak Capital ROI', value: peakROI },
+                              ].map((tile) => (
+                                <div key={tile.label} className="rounded-xl bg-surface-2 p-4 text-center ring-1 ring-border">
+                                  <Percent value={tile.value} signed colored className="mb-1 block text-xl font-bold" />
+                                  <div className="flex items-center justify-center gap-1 text-[10px] font-medium uppercase text-muted-foreground">
+                                    {isStrategyView && <span className="size-1.5 rounded-full bg-strategy" aria-hidden="true" />}
+                                    <span>{tile.label}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="rounded-xl bg-surface-2 p-4 ring-1 ring-border">
+                              <div className="mb-2 flex items-center justify-between">
+                                <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                                  Annualized ROI
+                                </span>
+                                <Percent value={annROI} signed clamp={999} className="text-sm font-bold text-brand" />
+                              </div>
+                              {/* Capital efficiency: how much of the peak commitment the
+                                  position averaged. Lower is more efficient. */}
+                              <SplitMeter
+                                value={avgCap}
+                                total={peakCap || avgCap}
+                                tone="brand"
+                                label="Avg capital vs peak"
+                                valueLabel={formatMoney(avgCap, { decimals: 0 })}
+                              />
+                            </div>
                           </div>
-                          <div className="text-[10px] uppercase font-medium text-slate-400 flex items-center justify-center gap-1">
-                            {inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 && (
-                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
-                            )}
-                            <span>{inspectorMode === 'strategy' && activeStrategy && activeStrategy.items.length > 1 ? 'Strategy Peak ROI' : 'Peak Capital ROI'}</span>
-                          </div>
-                        </div>
-                      </div>
+                        );
+                      })()}
 
                       {/* Detailed Statistics Table */}
-                      <div className="mt-6 space-y-3 font-mono text-xs border-t border-slate-800/80 pt-4">
+                      <div className="mt-6 space-y-3 font-mono text-xs border-t border-border/80 pt-4">
                         {inspectorMode === 'strategy' && strategyMetrics && activeStrategy && activeStrategy.items.length > 1 ? (
                           <>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Strategy Status:</span>
-                              <span className={strategyMetrics.isOpen ? 'text-emerald-400 font-bold' : 'text-slate-300 font-semibold'}>
+                              <span className="text-muted-foreground font-sans">Strategy Status:</span>
+                              <span className={strategyMetrics.isOpen ? 'text-profit font-bold' : 'text-muted-foreground font-semibold'}>
                                 {strategyMetrics.isOpen ? `Open Active Position (${strategyMetrics.legsCount} legs)` : `Closed Strategy (${strategyMetrics.legsCount} legs)`}
                               </span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Strategy Expiration:</span>
-                              <span className="text-slate-200">{activeStrategy.expirationFormatted || '-'}</span>
+                              <span className="text-muted-foreground font-sans">Strategy Expiration:</span>
+                              <span className="text-foreground">{activeStrategy.expirationFormatted || '-'}</span>
                             </div>
                             {strategyMetrics.isOpen ? (
                               <>
                                 <div className="flex justify-between">
-                                  <span className="text-slate-400 font-sans">Net Entry / Cost Basis:</span>
-                                  <span className="text-slate-200">${Math.abs(strategyMetrics.netCostBasis).toFixed(2)}</span>
+                                  <span className="text-muted-foreground font-sans">Net Entry / Cost Basis:</span>
+                                  <span className="text-foreground">{<Money value={Math.abs(strategyMetrics.netCostBasis)} />}</span>
                                 </div>
                                 <div className="flex justify-between">
-                                  <span className="text-slate-400 font-sans">Net Market Price:</span>
-                                  <span className="text-slate-200">${Math.abs(strategyMetrics.netCurrentPrice).toFixed(2)}</span>
+                                  <span className="text-muted-foreground font-sans">Net Market Price:</span>
+                                  <span className="text-foreground">{<Money value={Math.abs(strategyMetrics.netCurrentPrice)} />}</span>
                                 </div>
                               </>
                             ) : (
                               <>
                                 {strategyMetrics.totalGrossCredit > 0 && (
                                   <div className="flex justify-between">
-                                    <span className="text-slate-400 font-sans">Gross Entry Credit:</span>
-                                    <span className="text-emerald-400">+${strategyMetrics.totalGrossCredit.toFixed(2)}</span>
+                                    <span className="text-muted-foreground font-sans">Gross Entry Credit:</span>
+                                    <span className="text-profit">+{<Money value={strategyMetrics.totalGrossCredit} />}</span>
                                   </div>
                                 )}
                                 {strategyMetrics.totalGrossDebit < 0 && (
                                   <div className="flex justify-between">
-                                    <span className="text-slate-400 font-sans">Gross Exit Debit:</span>
-                                    <span className="text-rose-400">-${Math.abs(strategyMetrics.totalGrossDebit).toFixed(2)}</span>
+                                    <span className="text-muted-foreground font-sans">Gross Exit Debit:</span>
+                                    <span className="text-loss">-{<Money value={Math.abs(strategyMetrics.totalGrossDebit)} />}</span>
                                   </div>
                                 )}
                                 {strategyMetrics.totalFees > 0 && (
                                   <div className="flex justify-between">
-                                    <span className="text-slate-400 font-sans">Total Fees & Comm.:</span>
-                                    <span className="text-slate-400">-${strategyMetrics.totalFees.toFixed(2)}</span>
+                                    <span className="text-muted-foreground font-sans">Total Fees & Comm.:</span>
+                                    <span className="text-muted-foreground">-{<Money value={strategyMetrics.totalFees} />}</span>
                                   </div>
                                 )}
                               </>
                             )}
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Initial Entry Capital:</span>
-                              <span className="text-slate-200">${strategyMetrics.totalRequiredCapital.toFixed(2)}</span>
+                              <span className="text-muted-foreground font-sans">Initial Entry Capital:</span>
+                              <span className="text-foreground">{<Money value={strategyMetrics.totalRequiredCapital} />}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
-                              <span className="text-slate-200">${strategyMetrics.totalPeakCapital.toFixed(2)}</span>
+                              <span className="text-muted-foreground font-sans">Peak Capital Exposure:</span>
+                              <span className="text-foreground">{<Money value={strategyMetrics.totalPeakCapital} />}</span>
                             </div>
-                            <div className="flex justify-between text-indigo-300 font-semibold">
-                              <span className="text-slate-400 font-sans">Average Capital Deployed:</span>
-                              <span>${strategyMetrics.totalAvgCapital.toFixed(2)}</span>
+                            <div className="flex justify-between text-brand font-semibold">
+                              <span className="text-muted-foreground font-sans">Average Capital Deployed:</span>
+                              <span>{<Money value={strategyMetrics.totalAvgCapital} />}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">{strategyMetrics.isOpen ? 'Strategy Unrealized P/L:' : 'Strategy Realized P/L:'}</span>
-                              <span className={strategyMetrics.netProfit >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                                {strategyMetrics.netProfit >= 0 ? '+' : ''}${strategyMetrics.netProfit.toFixed(2)}
+                              <span className="text-muted-foreground font-sans">{strategyMetrics.isOpen ? 'Strategy Unrealized P/L:' : 'Strategy Realized P/L:'}</span>
+                              <span className={strategyMetrics.netProfit >= 0 ? 'text-profit font-bold' : 'text-loss font-bold'}>
+                                <PnL value={strategyMetrics.netProfit} />
                               </span>
                             </div>
-                            <div className="flex justify-between border-t border-slate-800/60 pt-2">
-                              <span className="text-slate-400 font-sans">Holding Period:</span>
-                              <span className="text-slate-200">{strategyMetrics.daysHeld} {strategyMetrics.daysHeld === 1 ? 'day' : 'days'}</span>
+                            <div className="flex justify-between border-t border-border/60 pt-2">
+                              <span className="text-muted-foreground font-sans">Holding Period:</span>
+                              <span className="text-foreground">{strategyMetrics.daysHeld} {strategyMetrics.daysHeld === 1 ? 'day' : 'days'}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Strategy Annualized ROI:</span>
-                              <span className="text-indigo-400 font-bold">{strategyMetrics.annualizedROI.toFixed(1)}%</span>
+                              <span className="text-muted-foreground font-sans">Strategy Annualized ROI:</span>
+                              <span className="text-brand font-bold">{strategyMetrics.annualizedROI.toFixed(1)}%</span>
                             </div>
                           </>
                         ) : (
                           <>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Status:</span>
-                              <span className={activeTrade.status === 'Open' ? 'text-emerald-400 font-bold' : 'text-slate-300 font-semibold'}>
+                              <span className="text-muted-foreground font-sans">Status:</span>
+                              <span className={activeTrade.status === 'Open' ? 'text-profit font-bold' : 'text-muted-foreground font-semibold'}>
                                 {activeTrade.status === 'Open' ? 'Open Active Position' : 'Closed Trade'}
                               </span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Execution Date:</span>
-                              <span className="text-slate-200">{formatTradeDateTime(activeTrade.date)}</span>
+                              <span className="text-muted-foreground font-sans">Execution Date:</span>
+                              <span className="text-foreground">{formatTradeDateTime(activeTrade.date)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Entry Price / Qty:</span>
-                              <span className="text-slate-200">${(activeTrade.price || 0).toFixed(2)} × {activeTrade.quantity || 1}</span>
+                              <span className="text-muted-foreground font-sans">Entry Price / Qty:</span>
+                              <span className="text-foreground">{<Money value={(activeTrade.price || 0)} />} × {activeTrade.quantity || 1}</span>
                             </div>
                             {activeTrade.fees ? (
                               <div className="flex justify-between">
-                                <span className="text-slate-400 font-sans">Fees & Commissions:</span>
-                                <span className="text-slate-400">-${activeTrade.fees.toFixed(2)}</span>
+                                <span className="text-muted-foreground font-sans">Fees & Commissions:</span>
+                                <span className="text-muted-foreground">-{<Money value={activeTrade.fees} />}</span>
                               </div>
                             ) : null}
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Required Capital at Open:</span>
-                              <span className="text-slate-200">${(activeTrade.requiredCapital || 0).toFixed(2)}</span>
+                              <span className="text-muted-foreground font-sans">Required Capital at Open:</span>
+                              <span className="text-foreground">{<Money value={(activeTrade.requiredCapital || 0)} />}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Peak Capital Exposure:</span>
-                              <span className="text-slate-200">${(activeTrade.peakCapital || 0).toFixed(2)}</span>
+                              <span className="text-muted-foreground font-sans">Peak Capital Exposure:</span>
+                              <span className="text-foreground">{<Money value={(activeTrade.peakCapital || 0)} />}</span>
                             </div>
-                            <div className="flex justify-between text-indigo-300 font-semibold">
-                              <span className="text-slate-400 font-sans">Average Capital Deployed:</span>
+                            <div className="flex justify-between text-brand font-semibold">
+                              <span className="text-muted-foreground font-sans">Average Capital Deployed:</span>
                               <span>${(activeMetrics.avgCapital || activeTrade.requiredCapital || 0).toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Net Cash Flow / P&L:'}</span>
-                              <span className={(activeMetrics.profit || 0) >= 0 ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                                {(activeMetrics.profit || 0) >= 0 ? '+' : ''}${(activeMetrics.profit || 0).toFixed(2)}
+                              <span className="text-muted-foreground font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Net Cash Flow / P&L:'}</span>
+                              <span className={(activeMetrics.profit || 0) >= 0 ? 'text-profit font-bold' : 'text-loss font-bold'}>
+                                <PnL value={activeMetrics.profit || 0} />
                               </span>
                             </div>
-                            <div className="flex justify-between border-t border-slate-800/60 pt-2">
-                              <span className="text-slate-400 font-sans">Holding Period:</span>
-                              <span className="text-slate-200">{activeMetrics.daysHeld || 1} {(activeMetrics.daysHeld || 1) === 1 ? 'day' : 'days'}</span>
+                            <div className="flex justify-between border-t border-border/60 pt-2">
+                              <span className="text-muted-foreground font-sans">Holding Period:</span>
+                              <span className="text-foreground">{activeMetrics.daysHeld || 1} {(activeMetrics.daysHeld || 1) === 1 ? 'day' : 'days'}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-slate-400 font-sans">Annualized ROI:</span>
-                              <span className="text-indigo-400 font-bold">{(activeMetrics.annualizedROI || 0).toFixed(1)}%</span>
+                              <span className="text-muted-foreground font-sans">Annualized ROI:</span>
+                              <span className="text-brand font-bold">{(activeMetrics.annualizedROI || 0).toFixed(1)}%</span>
                             </div>
                           </>
                         )}
                       </div>
 
-                      <div className="mt-6 p-4 bg-indigo-500/5 rounded-xl border border-indigo-500/20 text-xs font-sans">
-                        <div className="text-indigo-400 font-bold uppercase text-[10px] tracking-wider mb-1 flex items-center gap-1.5">
+                      <div className="mt-6 p-4 bg-brand/5 rounded-xl border border-brand/20 text-xs font-sans">
+                        <div className="text-brand font-bold uppercase text-[10px] tracking-wider mb-1 flex items-center gap-1.5">
                           <ShieldCheck className="w-3.5 h-3.5" />
                           <span>Capital Efficiency Insight</span>
                         </div>
-                        <p className="text-slate-400 text-[11px] leading-relaxed">
+                        <p className="text-muted-foreground text-[11px] leading-relaxed">
                           {inspectorMode === 'strategy' && strategyMetrics && activeStrategy && activeStrategy.items.length > 1 ? (
                             `Allocated an average of $${strategyMetrics.totalAvgCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} across ${strategyMetrics.legsCount} legs in ${activeStrategy.strategyName} structure over ${strategyMetrics.daysHeld} ${strategyMetrics.daysHeld === 1 ? 'day' : 'days'} (ranging from $${strategyMetrics.totalRequiredCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} at open to a peak of $${strategyMetrics.totalPeakCapital.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}), delivering an annualized yield of ${strategyMetrics.annualizedROI.toFixed(1)}%.`
                           ) : (
@@ -3143,7 +2387,7 @@ export default function App() {
                       </div>
                     </>
                   ) : (
-                    <div className="p-8 text-center text-slate-500 text-xs">
+                    <div className="p-8 text-center text-subtle-foreground text-xs">
                       Select a trade from the table to view capital-adjusted metrics.
                     </div>
                   )}
@@ -3155,24 +2399,24 @@ export default function App() {
       )}
 
       <Dialog open={portalDialogOpen} onOpenChange={setPortalDialogOpen}>
-        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-2xl h-[80vh] flex flex-col p-0 overflow-hidden">
-          <DialogHeader className="p-4 border-b border-slate-800/80 flex flex-row items-center justify-between shrink-0">
+        <DialogContent className="bg-card border-border text-foreground max-w-2xl h-[80vh] flex flex-col p-0 overflow-hidden">
+          <DialogHeader className="p-4 border-b border-border/80 flex flex-row items-center justify-between shrink-0">
             <div>
-              <DialogTitle className="text-white text-base font-bold flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-indigo-400" />
+              <DialogTitle className="text-foreground text-base font-bold flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-brand" />
                 <span>SnapTrade Connection Portal</span>
               </DialogTitle>
-              <DialogDescription className="text-slate-400 text-xs mt-0.5">
+              <DialogDescription className="text-muted-foreground text-xs mt-0.5">
                 Securely authenticate with your brokerage. SnapTrade connects directly with OAuth and encryption.
               </DialogDescription>
             </div>
           </DialogHeader>
 
-          <div className="flex-1 min-h-0 bg-[#0d0e12] relative flex flex-col items-center justify-center">
+          <div className="flex-1 min-h-0 bg-background relative flex flex-col items-center justify-center">
             {portalLoading ? (
               <div className="flex flex-col items-center gap-3 p-8">
-                <Activity className="w-8 h-8 text-indigo-400 animate-spin" />
-                <span className="text-xs font-mono text-slate-400">Opening secure portal session...</span>
+                <Spinner size="lg" label="" />
+                <span className="text-xs font-mono text-muted-foreground">Opening secure portal session...</span>
               </div>
             ) : portalUrl ? (
               <iframe
@@ -3184,22 +2428,22 @@ export default function App() {
               />
             ) : (
               <div className="p-8 text-center max-w-md">
-                <AlertCircle className="w-10 h-10 text-amber-400 mx-auto mb-3" />
-                <h3 className="text-sm font-bold text-white mb-2">SnapTrade Setup</h3>
-                <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-                  {portalError || 'To connect live brokerages, please configure your SnapTrade Client ID and Consumer Key in Settings.'}
+                <AlertCircle className="w-10 h-10 text-warning mx-auto mb-3" />
+                <h3 className="text-sm font-bold text-foreground mb-2">SnapTrade Setup</h3>
+                <p className="text-xs text-muted-foreground mb-6 leading-relaxed">
+                  {portalError || 'To connect live brokerages, set SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY in the server .env file and restart.'}
                 </p>
                 <div className="flex gap-3 justify-center">
                   <Button
                     onClick={() => handleOpenConnectionPortal()}
-                    className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-4 cursor-pointer"
+                    className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold px-4 cursor-pointer"
                   >
                     Try Again
                   </Button>
                   <Button
                     onClick={() => setPortalDialogOpen(false)}
                     variant="outline"
-                    className="border-slate-700 text-slate-300 text-xs cursor-pointer"
+                    className="border-border text-muted-foreground text-xs cursor-pointer"
                   >
                     Close
                   </Button>
@@ -3212,20 +2456,20 @@ export default function App() {
 
       {/* Connected Brokerages Management Dialog */}
       <Dialog open={connectionsDialogOpen} onOpenChange={setConnectionsDialogOpen}>
-        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-lg">
+        <DialogContent className="bg-card border-border text-foreground max-w-lg">
           <DialogHeader>
-            <DialogTitle className="text-white flex items-center gap-2">
-              <Building2 className="w-5 h-5 text-indigo-400" />
+            <DialogTitle className="text-foreground flex items-center gap-2">
+              <Building2 className="w-5 h-5 text-brand" />
               <span>Connected Brokerages</span>
             </DialogTitle>
-            <DialogDescription className="text-slate-400 text-xs">
+            <DialogDescription className="text-muted-foreground text-xs">
               Manage your linked institutions and connections across SnapTrade.
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-3 my-4 max-h-[50vh] overflow-y-auto">
             {connections.length === 0 && accounts.length === 0 ? (
-              <div className="text-center p-6 text-slate-500 text-xs">
+              <div className="text-center p-6 text-subtle-foreground text-xs">
                 No brokerages connected yet.
               </div>
             ) : (
@@ -3234,25 +2478,25 @@ export default function App() {
                 const id = item.id;
                 const isDisabled = item.disabled === true;
                 return (
-                  <div key={id} className="bg-[#181a22] border border-slate-800/80 p-3.5 rounded-xl flex items-center justify-between">
+                  <div key={id} className="bg-surface-2 border border-border/80 p-3.5 rounded-xl flex items-center justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-9 h-9 rounded-lg bg-indigo-600/10 border border-indigo-500/20 flex items-center justify-center font-bold text-indigo-400 text-xs">
+                      <div className="w-9 h-9 rounded-lg bg-brand-fill/10 border border-brand/20 flex items-center justify-center font-bold text-brand text-xs">
                         {title.slice(0, 2).toUpperCase()}
                       </div>
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-xs font-semibold text-white">{title}</span>
+                          <span className="text-xs font-semibold text-foreground">{title}</span>
                           {isDisabled ? (
-                            <span className="bg-amber-500/10 text-amber-300 text-[10px] px-2 py-0.5 rounded-full border border-amber-500/30">
+                            <span className="bg-warning/10 text-warning text-[10px] px-2 py-0.5 rounded-full border border-warning/30">
                               Re-auth Needed
                             </span>
                           ) : (
-                            <span className="bg-emerald-500/10 text-emerald-300 text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/20">
+                            <span className="bg-profit/10 text-profit text-[10px] px-2 py-0.5 rounded-full border border-profit/20">
                               Active
                             </span>
                           )}
                         </div>
-                        <div className="text-[10px] text-slate-400 font-mono">ID: {id.slice(0, 16)}...</div>
+                        <div className="text-[10px] text-muted-foreground font-mono">ID: {id.slice(0, 16)}...</div>
                       </div>
                     </div>
 
@@ -3264,17 +2508,17 @@ export default function App() {
                             handleOpenConnectionPortal(id);
                           }}
                           size="sm"
-                          className="bg-amber-600 hover:bg-amber-500 text-white h-7 px-2.5 text-xs cursor-pointer shadow-sm"
+                          className="bg-warning-fill hover:bg-warning-fill/85 text-white h-7 px-2.5 text-xs cursor-pointer shadow-sm"
                         >
                           <RefreshCw className="w-3 h-3 mr-1" />
                           Reconnect
                         </Button>
                       )}
                       <Button
-                        onClick={() => handleDisconnectBroker(id)}
+                        onClick={() => setPendingDisconnect({ id, name: title })}
                         variant="ghost"
                         size="sm"
-                        className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 h-7 px-2.5 text-xs cursor-pointer"
+                        className="text-loss hover:text-loss hover:bg-loss/10 h-7 px-2.5 text-xs cursor-pointer"
                         title="Disconnect Brokerage"
                       >
                         <Trash2 className="w-3.5 h-3.5 mr-1" />
@@ -3287,13 +2531,13 @@ export default function App() {
             )}
           </div>
 
-          <div className="flex gap-2 justify-between pt-2 border-t border-slate-800/80">
+          <div className="flex gap-2 justify-between pt-2 border-t border-border/80">
             <Button
               onClick={() => {
                 setConnectionsDialogOpen(false);
                 setTastyDialogOpen(true);
               }}
-              className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold h-9 cursor-pointer"
+              className="bg-loss-fill hover:bg-loss-fill/85 text-white text-xs font-semibold h-9 cursor-pointer"
             >
               <span className="mr-1">🍒</span>
               <span>Tastytrade Direct API</span>
@@ -3303,7 +2547,7 @@ export default function App() {
                 setConnectionsDialogOpen(false);
                 handleOpenConnectionPortal();
               }}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-9 cursor-pointer"
+              className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold h-9 cursor-pointer"
             >
               <PlusCircle className="w-4 h-4 mr-1.5" />
               Link Via SnapTrade
@@ -3312,19 +2556,52 @@ export default function App() {
         </DialogContent>
       </Dialog>
 
+      {/* Destructive-action confirmation. Replaces a native confirm(). */}
+      <AlertDialog
+        open={pendingDisconnect !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingDisconnect(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Disconnect this brokerage?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDisconnect?.name || 'This brokerage'} will be unlinked from
+              Alphatrack. Synced trades and positions from it will no longer appear. You can
+              reconnect at any time.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep connected</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const target = pendingDisconnect;
+                setPendingDisconnect(null);
+                setConnectionsDialogOpen(false);
+                if (target) handleDisconnectBroker(target.id);
+              }}
+              className="bg-loss-fill text-white hover:bg-loss-fill/85"
+            >
+              Disconnect
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* Tastytrade Direct API Connect Dialog */}
       <Dialog open={tastyDialogOpen} onOpenChange={setTastyDialogOpen}>
-        <DialogContent className="bg-[#13141a] border-slate-800 text-slate-100 max-w-md p-6">
-          <DialogHeader className="pb-3 border-b border-slate-800/80">
+        <DialogContent className="bg-card border-border text-foreground max-w-md p-6">
+          <DialogHeader className="pb-3 border-b border-border/80">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-rose-500/15 border border-rose-500/30 flex items-center justify-center text-lg">
+              <div className="w-9 h-9 rounded-xl bg-loss/15 border border-loss/30 flex items-center justify-center text-lg">
                 🍒
               </div>
               <div>
-                <DialogTitle className="text-white text-base font-bold">
+                <DialogTitle className="text-foreground text-base font-bold">
                   Tastytrade Direct API
                 </DialogTitle>
-                <DialogDescription className="text-slate-400 text-xs mt-0.5">
+                <DialogDescription className="text-muted-foreground text-xs mt-0.5">
                   Official REST connection for real-time futures options & live quotes.
                 </DialogDescription>
               </div>
@@ -3333,17 +2610,17 @@ export default function App() {
 
           {tastyConnected ? (
             <div className="py-4 space-y-4">
-              <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold">
+              <div className="bg-profit/10 border border-profit/30 rounded-xl p-4 flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-profit/20 flex items-center justify-center text-profit font-bold">
                   ✓
                 </div>
                 <div>
-                  <div className="text-xs font-bold text-white">Tastytrade API Connected</div>
-                  <div className="text-[11px] text-emerald-300">
+                  <div className="text-xs font-bold text-foreground">Tastytrade API Connected</div>
+                  <div className="text-[11px] text-profit">
                     Live positions, `/MES`, `/MNQ`, balances & mark quotes active.
                   </div>
                   {tastyUser?.email && (
-                    <div className="text-[10px] text-slate-400 font-mono mt-0.5">User: {tastyUser.email}</div>
+                    <div className="text-[10px] text-muted-foreground font-mono mt-0.5">User: {tastyUser.email}</div>
                   )}
                 </div>
               </div>
@@ -3354,7 +2631,7 @@ export default function App() {
                     if (user) fetchAllData(user.uid);
                     setTastyDialogOpen(false);
                   }}
-                  className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer"
+                  className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold cursor-pointer"
                 >
                   <RefreshCw className="w-3.5 h-3.5 mr-1" />
                   Sync Portfolio
@@ -3362,7 +2639,7 @@ export default function App() {
                 <Button
                   onClick={handleTastytradeLogout}
                   variant="ghost"
-                  className="text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 text-xs cursor-pointer"
+                  className="text-loss hover:text-loss hover:bg-loss/10 text-xs cursor-pointer"
                 >
                   <Trash2 className="w-3.5 h-3.5 mr-1" />
                   Disconnect
@@ -3372,32 +2649,35 @@ export default function App() {
           ) : (
             <form onSubmit={handleTastytradeLogin} className="py-3 space-y-4">
               {tastyError && (
-                <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs p-3 rounded-xl flex items-start gap-2">
-                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                <div className="bg-loss/10 border border-loss/30 text-loss text-xs p-3 rounded-xl flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-loss shrink-0 mt-0.5" />
                   <div>{tastyError}</div>
                 </div>
               )}
 
               {tastyRequires2FA ? (
                 <div className="space-y-3">
-                  <div className="bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs p-3 rounded-xl">
-                    <div className="font-semibold text-amber-400 mb-1">🔐 2FA Verification Required</div>
+                  <div className="bg-warning/10 border border-warning/30 text-warning text-xs p-3 rounded-xl">
+                    <div className="font-semibold text-warning mb-1">🔐 2FA Verification Required</div>
                     <div>Please enter the 6-digit verification code from your SMS or Authenticator App.</div>
                   </div>
 
                   <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1.5">
+                    <label htmlFor="tasty-otp" className="text-xs font-semibold text-muted-foreground block mb-1.5">
                       6-Digit Security Code (OTP)
                     </label>
                     <input
+                      id="tasty-otp"
                       type="text"
+                      inputMode="numeric"
+                      autoComplete="one-time-code"
                       maxLength={6}
                       autoFocus
                       required
                       placeholder="123456"
                       value={tastyOtp}
                       onChange={(e) => setTastyOtp(e.target.value.replace(/\D/g, ''))}
-                      className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-4 py-2.5 text-center text-xl font-mono tracking-widest text-white outline-none transition-colors"
+                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-4 py-2.5 text-center text-xl font-mono tracking-widest text-foreground outline-none transition-colors"
                     />
                   </div>
 
@@ -3408,16 +2688,16 @@ export default function App() {
                         setTastyRequires2FA(false);
                         setTastyOtp('');
                       }}
-                      className="text-xs text-slate-400 hover:text-slate-200 underline cursor-pointer"
+                      className="text-xs text-muted-foreground hover:text-foreground underline cursor-pointer"
                     >
                       Back to Username
                     </button>
                     <Button
                       type="submit"
                       disabled={tastyLoading || tastyOtp.length < 6}
-                      className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
+                      className="bg-loss-fill hover:bg-loss-fill/85 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
                     >
-                      {tastyLoading ? <Activity className="w-3.5 h-3.5 animate-spin mr-1" /> : null}
+                      {tastyLoading ? <Spinner size="sm" label="" className="mr-1" /> : null}
                       Verify & Connect
                     </Button>
                   </div>
@@ -3425,32 +2705,34 @@ export default function App() {
               ) : (
                 <div className="space-y-3">
                   <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    <label htmlFor="tasty-login" className="text-xs font-semibold text-muted-foreground block mb-1">
                       Tastytrade Username or Email
                     </label>
                     <input
+                      id="tasty-login"
                       type="text"
                       required
                       autoComplete="username"
                       placeholder="e.g. trader123 or you@email.com"
                       value={tastyLogin}
                       onChange={(e) => setTastyLogin(e.target.value)}
-                      className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none transition-colors"
+                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs text-foreground outline-none transition-colors"
                     />
                   </div>
 
                   <div>
-                    <label className="text-xs font-semibold text-slate-300 block mb-1">
+                    <label htmlFor="tasty-password" className="text-xs font-semibold text-muted-foreground block mb-1">
                       Password
                     </label>
                     <input
+                      id="tasty-password"
                       type="password"
                       required
                       autoComplete="current-password"
                       placeholder="••••••••••••"
                       value={tastyPassword}
                       onChange={(e) => setTastyPassword(e.target.value)}
-                      className="w-full bg-[#181a24] border border-slate-700 focus:border-rose-500 rounded-xl px-3.5 py-2 text-xs text-white outline-none transition-colors"
+                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs text-foreground outline-none transition-colors"
                     />
                   </div>
 
@@ -3458,32 +2740,32 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => setTastyRequires2FA(true)}
-                      className="text-[11px] text-rose-400 hover:text-rose-300 underline cursor-pointer"
+                      className="text-[11px] text-loss hover:text-loss underline cursor-pointer"
                     >
                       Enter 2FA / Device Code directly →
                     </button>
                   </div>
 
-                  <div className="text-[11px] text-slate-500 flex items-center gap-1.5 pt-1">
-                    <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div className="text-[11px] text-subtle-foreground flex items-center gap-1.5 pt-1">
+                    <ShieldCheck className="w-4 h-4 text-profit shrink-0" />
                     <span>Credentials authenticate directly with Tastytrade API over TLS encryption.</span>
                   </div>
 
-                  <div className="flex justify-end gap-2 pt-3 border-t border-slate-800/80">
+                  <div className="flex justify-end gap-2 pt-3 border-t border-border/80">
                     <Button
                       type="button"
                       variant="outline"
                       onClick={() => setTastyDialogOpen(false)}
-                      className="border-slate-700 text-slate-300 text-xs h-9 cursor-pointer"
+                      className="border-border text-muted-foreground text-xs h-9 cursor-pointer"
                     >
                       Cancel
                     </Button>
                     <Button
                       type="submit"
                       disabled={tastyLoading || !tastyLogin || !tastyPassword}
-                      className="bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
+                      className="bg-loss-fill hover:bg-loss-fill/85 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
                     >
-                      {tastyLoading ? <Activity className="w-3.5 h-3.5 animate-spin mr-1" /> : null}
+                      {tastyLoading ? <Spinner size="sm" label="" className="mr-1" /> : null}
                       Connect Tastytrade
                     </Button>
                   </div>
