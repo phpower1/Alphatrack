@@ -615,17 +615,73 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
 }
 
 /**
- * Filter non-trade events (e.g. FEE, INTEREST, DEPOSIT, WITHDRAWAL)
+ * Filter non-trade events (e.g. FEE, INTEREST, DEPOSIT, WITHDRAWAL, MONEY MOVEMENT, TRANSFERS)
  */
 export function isTradeActivity(act: any): boolean {
-  const type = (act.type || '').toUpperCase();
+  if (!act) return false;
+
+  const rawTxType = (act['transaction-type'] || act.transaction_type || act.type || '').toString().toUpperCase();
+  const rawSubType = (act['transaction-sub-type'] || act.transaction_sub_type || act.action || act['action-type'] || act.action_type || '').toString().toUpperCase();
   const desc = (act.description || '').toUpperCase();
 
-  const nonTradeTypes = ['FEE', 'INTEREST', 'DEPOSIT', 'WITHDRAWAL', 'TRANSFER', 'TAX', 'ADJUSTMENT', 'DIVIDEND'];
-  if (nonTradeTypes.includes(type)) return false;
-  if (desc.startsWith('FEE ') || desc === 'FEE' || desc.includes('ACCOUNT FEE') || desc.includes('REGULATORY FEE')) {
+  // 1. Exclude explicit non-trade transaction types and sub-types
+  const nonTradeTypes = [
+    'MONEY_MOVEMENT', 'MONEY MOVEMENT', 'MONEYMOVEMENT',
+    'FEE', 'FEES', 'INTEREST', 'DEPOSIT', 'WITHDRAWAL', 'TRANSFER',
+    'TAX', 'TAXES', 'ADJUSTMENT', 'DIVIDEND', 'DIVIDENDS', 'CASH', 'JOURNAL', 'BALANCE', 'REBATE'
+  ];
+
+  for (const ntt of nonTradeTypes) {
+    if (rawTxType === ntt || rawTxType.includes(ntt)) return false;
+    if (rawSubType === ntt || rawSubType.includes(ntt)) return false;
+  }
+
+  // 2. Exclude descriptions matching non-trade banking / cash flow events
+  if (
+    desc.includes('DEPOSIT') ||
+    desc.includes('WITHDRAWAL') ||
+    desc.includes('ELECTRONIC FUND') ||
+    desc.includes('ACH ') ||
+    desc.startsWith('ACH') ||
+    desc.includes('WIRE ') ||
+    desc.startsWith('WIRE') ||
+    desc.includes('FUNDS TRANSFER') ||
+    desc.includes('INTERNAL TRANSFER') ||
+    desc.includes('MONEY MOVEMENT') ||
+    desc.includes('INTEREST PAID') ||
+    desc.includes('INTEREST CHARGED') ||
+    desc.includes('DIVIDEND') ||
+    desc.includes('ACCOUNT FEE') ||
+    desc.includes('REGULATORY FEE') ||
+    desc.includes('EXCHANGE FEE') ||
+    desc.includes('CLEARING FEE') ||
+    desc.includes('MONTHLY FEE') ||
+    desc.includes('PLATFORM FEE') ||
+    desc.startsWith('FEE ') ||
+    desc === 'FEE' ||
+    desc.includes('BALANCE ADJUSTMENT') ||
+    desc.includes('JOURNAL ENTRY')
+  ) {
     return false;
   }
+
+  // 3. If it has no symbol or underlying symbol and description has no trade indicators, exclude it
+  const hasSymbol = Boolean(
+    act.symbol ||
+    act['symbol'] ||
+    act['underlying-symbol'] ||
+    act.underlying_symbol ||
+    act.instrument?.symbol ||
+    act.option_symbol ||
+    act.raw_symbol
+  );
+
+  const hasTradeKeyword = /CALL|PUT|\b[CP]\b|\bSTO\b|\bBTO\b|\bBTC\b|\bSTC\b|\bSOLD\b|\bBOUGHT\b|\bBOT\b|\bSLD\b|\bBUY\b|\bSELL\b|\bEXPIRATION\b|\bASSIGNMENT\b|\bEXERCISED\b|\bFUTURE\b/i.test(desc);
+
+  if (!hasSymbol && !hasTradeKeyword) {
+    return false;
+  }
+
   return true;
 }
 

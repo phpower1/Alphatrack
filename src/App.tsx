@@ -97,6 +97,74 @@ const getLocalTastySession = (): StoredTastytradeSession | null => {
 // Domain shapes live in ./types so presentational components can import them
 // without pulling in this module.
 
+/**
+ * Post-processing pass: pair opening trades (BTO/STO) with their closing
+ * trades (BTC/STC) on the same contract. Without this, an STO whose option
+ * hasn't expired yet stays marked "Open" even after a BTC has been executed,
+ * causing the P/L to use a bogus flat-5% estimate instead of the real close.
+ */
+const pairOpenAndClosingTrades = (trades: Trade[]): Trade[] => {
+  // Build contract key for matching: rootSymbol + expiration + strike + optionType
+  const contractKey = (t: Trade): string => {
+    const d = t.details;
+    const root = (d?.rootSymbol || t.symbol || '').toUpperCase();
+    const exp = d?.expirationDate || 'NO_EXP';
+    const strike = d?.strike !== undefined ? d.strike.toString() : 'NO_STRIKE';
+    const optType = d?.optionType || 'NO_TYPE';
+    return `${root}|${exp}|${strike}|${optType}`;
+  };
+
+  // Group trades by contract
+  const byContract = new Map<string, { openers: Trade[]; closers: Trade[] }>();
+  for (const t of trades) {
+    const key = contractKey(t);
+    if (!byContract.has(key)) {
+      byContract.set(key, { openers: [], closers: [] });
+    }
+    const group = byContract.get(key)!;
+    const action = t.details?.action;
+    if (action === 'BTC' || action === 'STC') {
+      group.closers.push(t);
+    } else if (action === 'BTO' || action === 'STO') {
+      group.openers.push(t);
+    }
+  }
+
+  // For each contract group, pair openers with closers
+  for (const [, group] of byContract) {
+    if (group.closers.length === 0) continue;
+
+    // Sort closers by date (earliest first) so we pair in chronological order
+    group.closers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+    for (const opener of group.openers) {
+      if (opener.status !== 'Open') continue; // Already marked closed
+
+      // Find a closer that matches this opener's quantity
+      const closerIdx = group.closers.findIndex(c => c.quantity === opener.quantity);
+      if (closerIdx === -1) {
+        // Also try matching any closer (for partial fills we just use the first available)
+        if (group.closers.length > 0) {
+          const closer = group.closers[0];
+          opener.status = 'Closed';
+          opener.closePrice = closer.price;
+          opener.closeDate = closer.date;
+          group.closers.splice(0, 1);
+        }
+        continue;
+      }
+
+      const closer = group.closers[closerIdx];
+      opener.status = 'Closed';
+      opener.closePrice = closer.price;
+      opener.closeDate = closer.date;
+      group.closers.splice(closerIdx, 1);
+    }
+  }
+
+  return trades;
+};
+
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -905,6 +973,11 @@ export default function App() {
         );
       }
 
+      // Pair opening trades with their closers before storing — this fixes
+      // P/L for trades that were closed (BTC/STC) but whose option hasn't
+      // expired yet (the opener would otherwise stay marked "Open" and get
+      // a bogus 5% flat-estimate P/L instead of using the real close price).
+      pairOpenAndClosingTrades(allTrades);
       setTrades(allTrades);
       setPositions(allPositions);
       if (allTrades.length > 0 && !activeTradeId) {
