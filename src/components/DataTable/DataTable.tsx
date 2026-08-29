@@ -255,6 +255,7 @@ function StrategyRows<Row extends { id: string }>({
   onSelect?: (id: string) => void;
 }) {
   const isCollapsed = Boolean(collapse?.strategies[strategy.id]);
+  const isDirectlySelected = selectedId === strategy.id;
   const containsSelection = strategy.items.some((item) => item.id === selectedId);
 
   return (
@@ -263,8 +264,10 @@ function StrategyRows<Row extends { id: string }>({
         level="strategy"
         expanded={!isCollapsed}
         onToggle={() => collapse?.toggleStrategy(strategy.id)}
+        onSelect={onSelect ? () => onSelect(strategy.id) : undefined}
         label={strategy.strategyName}
-        highlighted={containsSelection}
+        highlighted={isDirectlySelected || containsSelection}
+        selected={isDirectlySelected}
         columns={columns}
         renderCell={(column) => column.strategyCell?.(strategy)}
       />
@@ -288,20 +291,33 @@ function GroupRow<Row extends { id: string }>({
   level,
   expanded,
   onToggle,
+  onSelect,
   label,
   highlighted = false,
+  selected = false,
   columns,
   renderCell,
 }: {
   level: 'underlying' | 'strategy';
   expanded: boolean;
   onToggle: () => void;
+  onSelect?: () => void;
   label: string;
   highlighted?: boolean;
+  selected?: boolean;
   columns: ColumnDef<Row>[];
   renderCell: (column: ColumnDef<Row>) => ReactNode;
 }) {
   const isUnderlying = level === 'underlying';
+  const interactive = Boolean(onSelect) && !isUnderlying;
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLTableRowElement>) => {
+    if (!interactive) return;
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      onSelect!();
+    }
+  };
 
   return (
     <tr
@@ -311,8 +327,17 @@ function GroupRow<Row extends { id: string }>({
           ? 'border-t border-border bg-surface-2 hover:bg-surface-3'
           : 'bg-card hover:bg-surface-2',
         !isUnderlying && 'border-l-2 border-l-strategy/50',
-        highlighted && !isUnderlying && 'bg-brand/8'
+        interactive && 'cursor-pointer hover:bg-strategy/10',
+        highlighted && !isUnderlying && 'bg-strategy/10',
+        selected && !isUnderlying && 'bg-strategy/20 border-l-4 border-l-strategy text-foreground font-medium',
+        interactive &&
+          'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring'
       )}
+      onClick={interactive ? () => onSelect!() : undefined}
+      onKeyDown={handleKeyDown}
+      tabIndex={interactive ? 0 : undefined}
+      role={interactive ? 'row' : undefined}
+      aria-selected={interactive ? selected : undefined}
     >
       {columns.map((column, index) => (
         <td
@@ -329,7 +354,10 @@ function GroupRow<Row extends { id: string }>({
               {/* A real button, not a styled span — this is the disclosure control. */}
               <button
                 type="button"
-                onClick={onToggle}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggle();
+                }}
                 aria-expanded={expanded}
                 aria-label={`${expanded ? 'Collapse' : 'Expand'} ${label}`}
                 className="shrink-0 rounded text-subtle-foreground transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring cursor-pointer"

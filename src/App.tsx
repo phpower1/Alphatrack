@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { differenceInDays, parseISO, subDays } from 'date-fns';
+import { differenceInDays, parseISO, subDays, subMonths, subYears, startOfYear, isAfter, isSameDay } from 'date-fns';
 import {
   AlertCircle,
   Building2,
@@ -54,7 +54,7 @@ import { DataTable } from './components/DataTable/DataTable';
 import { buildTradeColumns } from './components/dashboard/tradeColumns';
 import { buildPositionColumns } from './components/dashboard/positionColumns';
 import { EmptyState } from './components/EmptyState';
-import { TableToolbar } from './components/dashboard/TableToolbar';
+import { TableToolbar, type PeriodFilter } from './components/dashboard/TableToolbar';
 import { AppHeader } from './components/layout/AppHeader';
 import { MetricCard } from './components/MetricCard';
 import { Money } from './components/format/Money';
@@ -199,6 +199,7 @@ export default function App() {
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'trades' | 'positions'>('positions');
   const [groupBy, setGroupBy] = useState<'strategy' | 'flat'>('strategy');
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('all');
   const [collapsedUnderlyings, setCollapsedUnderlyings] = useState<Record<string, boolean>>({});
   const [collapsedStrategies, setCollapsedStrategies] = useState<Record<string, boolean>>({});
   const [searchFilter, setSearchFilter] = useState('');
@@ -1079,11 +1080,40 @@ export default function App() {
     }
   };
 
-  // Filter trades and positions based on selected account and search
+  // Filter trades and positions based on selected account, period, and search
   const filteredTrades = useMemo(() => {
     let list = trades;
     if (selectedAccountId !== 'ALL') {
       list = list.filter(t => t.accountId === selectedAccountId);
+    }
+    if (periodFilter !== 'all') {
+      const now = new Date();
+      let cutoff: Date | null = null;
+      if (periodFilter === '1m') {
+        cutoff = subMonths(now, 1);
+      } else if (periodFilter === '3m') {
+        cutoff = subMonths(now, 3);
+      } else if (periodFilter === '6m') {
+        cutoff = subMonths(now, 6);
+      } else if (periodFilter === 'ytd') {
+        cutoff = startOfYear(now);
+      } else if (periodFilter === '1y') {
+        cutoff = subYears(now, 1);
+      }
+
+      if (cutoff) {
+        list = list.filter((t) => {
+          const dateStr = t.closeDate || t.date;
+          if (!dateStr) return true;
+          try {
+            const parsed = parseISO(dateStr);
+            if (isNaN(parsed.getTime())) return true;
+            return isAfter(parsed, cutoff) || isSameDay(parsed, cutoff);
+          } catch {
+            return true;
+          }
+        });
+      }
     }
     if (searchFilter.trim()) {
       const q = searchFilter.toLowerCase();
@@ -1099,7 +1129,7 @@ export default function App() {
       );
     }
     return list;
-  }, [trades, selectedAccountId, searchFilter]);
+  }, [trades, selectedAccountId, periodFilter, searchFilter]);
 
   const filteredPositions = useMemo(() => {
     let list = positions;
@@ -1287,6 +1317,61 @@ export default function App() {
     };
   };
 
+  const groupedPositions = useMemo(() => {
+    return groupItemsByTastyStrategy(filteredPositions);
+  }, [filteredPositions]);
+
+  const groupedTrades = useMemo(() => {
+    return groupItemsByTastyStrategy(filteredTrades, calculateROI);
+  }, [filteredTrades]);
+
+  const normalizePositionToTrade = useCallback((foundPos: Position): Trade => {
+    const pRoot = (foundPos.details?.rootSymbol || foundPos.symbol || '').toUpperCase().replace('/', '');
+    const pExp = foundPos.details?.expirationDate;
+    const pStrike = foundPos.details?.strike;
+    const pType = foundPos.details?.optionTypeShort;
+
+    const matchingTrade = (trades || []).find(t => {
+      const tRoot = (t.details?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
+      const sameRoot = tRoot === pRoot || tRoot.includes(pRoot) || pRoot.includes(tRoot);
+      if (!sameRoot) return false;
+      if (pExp && t.details?.expirationDate && t.details.expirationDate !== pExp) return false;
+      if (pStrike !== undefined && t.details?.strike !== undefined && Math.abs(t.details.strike - pStrike) > 0.1) return false;
+      if (pType && t.details?.optionTypeShort && t.details.optionTypeShort !== pType) return false;
+      return true;
+    });
+
+    let tradeDate = matchingTrade?.date || foundPos.date || (foundPos as any).createdDate;
+    if (!tradeDate && foundPos.details?.dte !== undefined && foundPos.details?.daysLeft !== undefined && foundPos.details.dte > foundPos.details.daysLeft) {
+      const daysAgo = foundPos.details.dte - foundPos.details.daysLeft;
+      tradeDate = subDays(new Date(), daysAgo).toISOString();
+    }
+    if (!tradeDate) {
+      tradeDate = new Date().toISOString();
+    }
+
+    const req = foundPos.requiredCapital || foundPos.capReq || (foundPos.totalValue && foundPos.totalValue > 0 ? foundPos.totalValue : (foundPos.averagePrice * Math.abs(foundPos.quantity)));
+    const peak = foundPos.peakCapital || (req * 1.15);
+
+    return {
+      id: foundPos.id,
+      accountId: foundPos.accountId,
+      brokerName: foundPos.brokerName,
+      symbol: foundPos.symbol,
+      type: foundPos.quantity >= 0 ? 'Buy' : 'Sell',
+      quantity: Math.abs(foundPos.quantity),
+      price: foundPos.averagePrice || foundPos.currentPrice,
+      date: tradeDate,
+      status: 'Open',
+      closePrice: null,
+      closeDate: null,
+      requiredCapital: req,
+      peakCapital: peak,
+      description: `${foundPos.details?.action || (foundPos.quantity >= 0 ? 'BTO' : 'STO')} ${Math.abs(foundPos.quantity)} ${foundPos.symbol}`,
+      details: foundPos.details
+    } as Trade;
+  }, [trades]);
+
   const activeTrade = useMemo(() => {
     if (!activeTradeId) {
       return (filteredTrades || [])[0] || (trades || [])[0] || null;
@@ -1296,70 +1381,54 @@ export default function App() {
 
     const foundPos = (positions || []).find(p => p.id === activeTradeId);
     if (foundPos) {
-      // Find matching opening trade date if available
-      const pRoot = (foundPos.details?.rootSymbol || foundPos.symbol || '').toUpperCase().replace('/', '');
-      const pExp = foundPos.details?.expirationDate;
-      const pStrike = foundPos.details?.strike;
-      const pType = foundPos.details?.optionTypeShort;
-
-      const matchingTrade = (trades || []).find(t => {
-        const tRoot = (t.details?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
-        const sameRoot = tRoot === pRoot || tRoot.includes(pRoot) || pRoot.includes(tRoot);
-        if (!sameRoot) return false;
-        if (pExp && t.details?.expirationDate && t.details.expirationDate !== pExp) return false;
-        if (pStrike !== undefined && t.details?.strike !== undefined && Math.abs(t.details.strike - pStrike) > 0.1) return false;
-        if (pType && t.details?.optionTypeShort && t.details.optionTypeShort !== pType) return false;
-        return true;
-      });
-
-      let tradeDate = matchingTrade?.date || foundPos.date || (foundPos as any).createdDate;
-      if (!tradeDate && foundPos.details?.dte !== undefined && foundPos.details?.daysLeft !== undefined && foundPos.details.dte > foundPos.details.daysLeft) {
-        const daysAgo = foundPos.details.dte - foundPos.details.daysLeft;
-        tradeDate = subDays(new Date(), daysAgo).toISOString();
-      }
-      if (!tradeDate) {
-        tradeDate = new Date().toISOString();
-      }
-
-      const req = foundPos.requiredCapital || foundPos.capReq || (foundPos.totalValue && foundPos.totalValue > 0 ? foundPos.totalValue : (foundPos.averagePrice * Math.abs(foundPos.quantity)));
-      const peak = foundPos.peakCapital || (req * 1.15);
-
-      return {
-        id: foundPos.id,
-        accountId: foundPos.accountId,
-        brokerName: foundPos.brokerName,
-        symbol: foundPos.symbol,
-        type: foundPos.quantity >= 0 ? 'Buy' : 'Sell',
-        quantity: Math.abs(foundPos.quantity),
-        price: foundPos.averagePrice || foundPos.currentPrice,
-        date: tradeDate,
-        status: 'Open',
-        closePrice: null,
-        closeDate: null,
-        requiredCapital: req,
-        peakCapital: peak,
-        description: `${foundPos.details?.action || (foundPos.quantity >= 0 ? 'BTO' : 'STO')} ${Math.abs(foundPos.quantity)} ${foundPos.symbol}`,
-        details: foundPos.details
-      } as Trade;
+      return normalizePositionToTrade(foundPos);
     }
 
-    return (filteredTrades || [])[0] || (trades || [])[0] || null;
-  }, [trades, positions, activeTradeId, filteredTrades]);
-
-  const groupedPositions = useMemo(() => {
-    return groupItemsByTastyStrategy(filteredPositions);
-  }, [filteredPositions]);
-
-  const groupedTrades = useMemo(() => {
-    return groupItemsByTastyStrategy(filteredTrades, calculateROI);
-  }, [filteredTrades]);
-
-  const activeStrategy = useMemo(() => {
-    if (!activeTrade) return null;
+    // Check if activeTradeId is a strategy ID in groupedTrades or groupedPositions
     const allGroups = activeTab === 'positions' ? groupedPositions : groupedTrades;
     for (const uGroup of allGroups) {
       for (const strat of uGroup.strategies) {
-        if (strat.id === activeTradeId || strat.items.some((item: any) => item.id === activeTradeId || item.id === activeTrade.id)) {
+        if (strat.id === activeTradeId) {
+          const firstItem = strat.items[0];
+          if (!firstItem) continue;
+          if ('openPnl' in firstItem) {
+            return normalizePositionToTrade(firstItem as Position);
+          }
+          return firstItem as Trade;
+        }
+      }
+    }
+
+    const otherGroups = activeTab === 'positions' ? groupedTrades : groupedPositions;
+    for (const uGroup of otherGroups) {
+      for (const strat of uGroup.strategies) {
+        if (strat.id === activeTradeId) {
+          const firstItem = strat.items[0];
+          if (!firstItem) continue;
+          if ('openPnl' in firstItem) {
+            return normalizePositionToTrade(firstItem as Position);
+          }
+          return firstItem as Trade;
+        }
+      }
+    }
+
+    return (filteredTrades || [])[0] || (trades || [])[0] || null;
+  }, [trades, positions, activeTradeId, filteredTrades, activeTab, groupedPositions, groupedTrades, normalizePositionToTrade]);
+
+  const activeStrategy = useMemo(() => {
+    const allGroups = activeTab === 'positions' ? groupedPositions : groupedTrades;
+    for (const uGroup of allGroups) {
+      for (const strat of uGroup.strategies) {
+        if (strat.id === activeTradeId || (activeTrade && strat.items.some((item: any) => item.id === activeTradeId || item.id === activeTrade.id))) {
+          return strat;
+        }
+      }
+    }
+    const otherGroups = activeTab === 'positions' ? groupedTrades : groupedPositions;
+    for (const uGroup of otherGroups) {
+      for (const strat of uGroup.strategies) {
+        if (strat.id === activeTradeId || (activeTrade && strat.items.some((item: any) => item.id === activeTradeId || item.id === activeTrade.id))) {
           return strat;
         }
       }
@@ -1746,6 +1815,15 @@ export default function App() {
     );
   }
 
+  const handleSelectRow = (id: string) => {
+    setActiveTradeId(id);
+    const allGroups = activeTab === 'positions' ? groupedPositions : groupedTrades;
+    const isStrategy = allGroups.some((u) => u.strategies.some((s) => s.id === id));
+    if (isStrategy) {
+      setInspectorMode('strategy');
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col font-sans bg-background text-foreground antialiased selection:bg-brand selection:text-foreground lg:h-screen lg:overflow-hidden">
       <AppHeader
@@ -1997,6 +2075,8 @@ export default function App() {
                 onGroupByChange={setGroupBy}
                 search={searchFilter}
                 onSearchChange={setSearchFilter}
+                period={periodFilter}
+                onPeriodChange={setPeriodFilter}
               />
 
               {/*
@@ -2017,7 +2097,7 @@ export default function App() {
                   groups={groupBy === 'strategy' ? groupedTrades : undefined}
                   collapse={collapseState}
                   selectedId={activeTradeId}
-                  onSelect={setActiveTradeId}
+                  onSelect={handleSelectRow}
                   loading={loading}
                   className="min-h-0 flex-1"
                   empty={
@@ -2049,7 +2129,7 @@ export default function App() {
                   groups={groupBy === 'strategy' ? groupedPositions : undefined}
                   collapse={collapseState}
                   selectedId={activeTradeId}
-                  onSelect={setActiveTradeId}
+                  onSelect={handleSelectRow}
                   loading={loading}
                   className="min-h-0 flex-1"
                   empty={

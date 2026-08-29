@@ -1,12 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
-import { FolderTree, Search, X } from 'lucide-react';
+import { Calendar, FolderTree, Search, X } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { cn } from '@/lib/utils';
 
 const SEARCH_DEBOUNCE_MS = 200;
+
+export type PeriodFilter = 'all' | '1m' | '3m' | '6m' | 'ytd' | '1y';
+
+export const PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: '1m', label: 'Last month' },
+  { value: '3m', label: 'Last 3 months' },
+  { value: '6m', label: 'Last 6 months' },
+  { value: 'ytd', label: 'Year-to-date' },
+  { value: '1y', label: 'Last year' },
+];
 
 export interface TableToolbarProps {
   activeTab: 'trades' | 'positions';
@@ -16,6 +28,9 @@ export interface TableToolbarProps {
 
   groupBy: 'strategy' | 'flat';
   onGroupByChange: (groupBy: 'strategy' | 'flat') => void;
+
+  period?: PeriodFilter;
+  onPeriodChange?: (period: PeriodFilter) => void;
 
   search: string;
   onSearchChange: (search: string) => void;
@@ -35,6 +50,8 @@ export function TableToolbar({
   positionsCount,
   groupBy,
   onGroupByChange,
+  period = 'all',
+  onPeriodChange,
   search,
   onSearchChange,
 }: TableToolbarProps) {
@@ -106,6 +123,34 @@ export function TableToolbar({
             </ToggleGroupItem>
           </ToggleGroup>
         </div>
+
+        {activeTab === 'trades' && onPeriodChange && (
+          <div className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-subtle-foreground">
+              <Calendar className="size-3 text-brand" aria-hidden="true" />
+              Period
+            </span>
+            <Select
+              value={period}
+              onValueChange={(val) => onPeriodChange(val as PeriodFilter)}
+            >
+              <SelectTrigger
+                size="sm"
+                aria-label="Filter trades by period"
+                className="h-8 min-w-[8.5rem] text-xs"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start" className="min-w-[9.5rem] text-xs">
+                {PERIOD_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         <div className="relative w-56">
           <Search
