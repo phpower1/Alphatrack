@@ -206,23 +206,23 @@ export function AppHeader({
             <SelectTrigger
               size="sm"
               aria-label="Select brokerage account"
-              className="max-w-[15rem] text-xs"
+              className="max-w-[16rem] text-xs"
             >
               <SelectValue>{(value) => accountLabel(String(value))}</SelectValue>
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent align="end" className="min-w-[20rem] max-w-[26rem] p-1">
               <SelectItem value="ALL">
-                <span className="flex w-full items-center justify-between gap-3">
-                  <span>All accounts</span>
-                  <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
+                <span className="flex w-full items-center justify-between gap-4">
+                  <span className="font-medium text-foreground">All accounts</span>
+                  <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
                     {accounts.length} {accounts.length === 1 ? 'broker' : 'brokers'}
                   </span>
                 </span>
               </SelectItem>
               {accounts.map((account) => (
                 <SelectItem key={account.id} value={account.id}>
-                  <span className="flex w-full items-center justify-between gap-3">
-                    <span className="truncate">
+                  <span className="flex w-full items-center justify-between gap-4">
+                    <span className="font-medium text-foreground">
                       {account.institution_name} · {account.name || account.number}
                     </span>
                     <span className="shrink-0 font-mono text-[11px] text-muted-foreground tabular-nums">
