@@ -3,11 +3,17 @@ import { differenceInDays, parseISO, subDays, subMonths, subYears, startOfYear, 
 import {
   AlertCircle,
   Building2,
+  Check,
+  CheckCircle2,
   DollarSign,
+  ExternalLink,
+  Key,
   Layers,
+  Lock,
   LogIn,
   PlusCircle,
   RefreshCw,
+  Settings,
   ShieldCheck,
   Trash2,
   TrendingUp,
@@ -239,82 +245,171 @@ export default function App() {
     };
   }, [userMenuOpen]);
 
-  // Tastytrade Direct Connection State
+  // Tastytrade OAuth 2.0 Connection State
   const [tastyConnected, setTastyConnected] = useState(false);
   const [tastyUser, setTastyUser] = useState<any>(null);
   const [tastyDialogOpen, setTastyDialogOpen] = useState(false);
-  const [tastyLogin, setTastyLogin] = useState('');
-  const [tastyPassword, setTastyPassword] = useState('');
-  const [tastyOtp, setTastyOtp] = useState('');
-  const [tastyRequires2FA, setTastyRequires2FA] = useState(false);
   const [tastyLoading, setTastyLoading] = useState(false);
   const [tastyError, setTastyError] = useState('');
+  const [tastyModalTab, setTastyModalTab] = useState<'oauth' | 'manual' | 'config'>('oauth');
+  const [tastyClientIdInput, setTastyClientIdInput] = useState('');
+  const [tastyClientSecretInput, setTastyClientSecretInput] = useState('');
+  const [tastyRefreshTokenInput, setTastyRefreshTokenInput] = useState('');
+  const [tastyConfigSaved, setTastyConfigSaved] = useState(false);
 
-  const handleTastytradeLogin = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
+  // Listen for OAuth 2.0 Popup Window completion message
+  useEffect(() => {
+    const handleOAuthMessage = async (event: MessageEvent) => {
+      if (event.data?.type === 'TASTYTRADE_OAUTH_SUCCESS' && user) {
+        console.log('[Tastytrade OAuth] Received success event from popup');
+        setTastyDialogOpen(false);
+        setTastyError('');
+        setTastyLoading(false);
+        await fetchAllData(user.uid);
+      }
+    };
+    window.addEventListener('message', handleOAuthMessage);
+    return () => window.removeEventListener('message', handleOAuthMessage);
+  }, [user]);
+
+  // Check Tastytrade OAuth server configuration on open
+  useEffect(() => {
+    if (tastyDialogOpen) {
+      setTastyError('');
+      fetch('/api/tastytrade/config')
+        .then(res => res.json())
+        .then(cfg => {
+          if (!cfg.isConfigured && !tastyClientIdInput) {
+            // Suggest config tab if not set in server env
+            setTastyModalTab('config');
+          }
+        })
+        .catch(() => {});
+    }
+  }, [tastyDialogOpen]);
+
+  const handleStartTastyOAuth = async () => {
     if (!user) return;
     setTastyLoading(true);
     setTastyError('');
 
     try {
-      const res = await fetch('/api/tastytrade/login', {
+      const res = await fetch(`/api/tastytrade/oauth/url?uid=${encodeURIComponent(user.uid)}`);
+      const data = await res.json();
+
+      if (!res.ok || !data.authUrl) {
+        if (data.error && (data.error.includes('not configured') || data.error.includes('Client ID'))) {
+          setTastyModalTab('config');
+          setTastyError('Please configure your Tastytrade Client ID & Secret below first.');
+        } else {
+          setTastyError(data.error || 'Failed to generate Tastytrade authorization URL');
+        }
+        return;
+      }
+
+      // Open Tastytrade authorization popup window
+      const width = 600;
+      const height = 750;
+      const left = window.screenX + (window.outerWidth - width) / 2;
+      const top = window.screenY + (window.outerHeight - height) / 2;
+      const popup = window.open(
+        data.authUrl,
+        'tastytrade_oauth_window',
+        `width=${width},height=${height},left=${left},top=${top},status=no,menubar=no,toolbar=no`
+      );
+
+      if (!popup) {
+        window.location.href = data.authUrl;
+        return;
+      }
+
+      // Poll in case postMessage is blocked across origins
+      const pollTimer = setInterval(async () => {
+        if (popup.closed) {
+          clearInterval(pollTimer);
+          setTastyLoading(false);
+          // Check if session was authorized
+          const statusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(user.uid)}`);
+          const statusData = await statusRes.json();
+          if (statusData.isConnected) {
+            setTastyDialogOpen(false);
+            await fetchAllData(user.uid);
+          }
+        }
+      }, 1000);
+    } catch (err: any) {
+      setTastyError(err.message || 'Failed to start Tastytrade authorization');
+    } finally {
+      setTastyLoading(false);
+    }
+  };
+
+  const handleTastyManualConnect = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !tastyRefreshTokenInput.trim()) return;
+    setTastyLoading(true);
+    setTastyError('');
+
+    try {
+      const res = await fetch('/api/tastytrade/oauth/manual', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          login: tastyLogin,
-          password: tastyPassword,
-          otp: tastyOtp || undefined,
           uid: user.uid,
-          rememberMe: true
+          refreshToken: tastyRefreshTokenInput.trim(),
+          clientId: tastyClientIdInput.trim() || undefined,
+          clientSecret: tastyClientSecretInput.trim() || undefined
         })
       });
 
       const data = await res.json();
-      const errorMsg = String(data.error || '').toLowerCase();
-      const is2FA = Boolean(
-        data.requires2FA ||
-        errorMsg.includes('challenge') ||
-        errorMsg.includes('device') ||
-        errorMsg.includes('2fa') ||
-        errorMsg.includes('two-factor') ||
-        errorMsg.includes('otp') ||
-        errorMsg.includes('verification')
-      );
-
       if (res.ok && data.success) {
         setTastyConnected(true);
         setTastyUser(data.user);
         setTastyDialogOpen(false);
-        setTastyRequires2FA(false);
-        setTastyOtp('');
-        setTastyPassword('');
-
-        // Persist session metadata to Firestore & LocalStorage for automatic reconnect
-        if ((data.sessionToken || data.rememberToken) && (data.login || tastyLogin)) {
-          const sessionToSave: StoredTastytradeSession = {
-            login: data.login || tastyLogin.trim(),
-            sessionToken: data.sessionToken,
-            rememberToken: data.rememberToken,
-            user: data.user,
-            updatedAt: new Date().toISOString()
-          };
-          saveLocalTastySession(sessionToSave);
-          try {
-            setDoc(doc(db, 'users', user.uid), {
-              tastytradeSession: sessionToSave
-            }, { merge: true }).catch(err => console.warn('Could not sync Tastytrade session to Firestore:', err));
-          } catch (e) {}
-        }
-
+        setTastyRefreshTokenInput('');
         await fetchAllData(user.uid);
-      } else if (is2FA) {
-        setTastyRequires2FA(true);
-        setTastyError('');
       } else {
-        setTastyError(data.error || 'Failed to authenticate with Tastytrade');
+        setTastyError(data.error || 'Failed to connect with Refresh Token');
       }
     } catch (err: any) {
-      setTastyError(err.message || 'Connection error. Please try again.');
+      setTastyError(err.message || 'Error connecting to Tastytrade');
+    } finally {
+      setTastyLoading(false);
+    }
+  };
+
+  const handleTastySaveConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!tastyClientIdInput.trim() || !tastyClientSecretInput.trim()) {
+      setTastyError('Both Client ID and Client Secret are required');
+      return;
+    }
+    setTastyLoading(true);
+    setTastyError('');
+
+    try {
+      const res = await fetch('/api/tastytrade/configure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: tastyClientIdInput.trim(),
+          clientSecret: tastyClientSecretInput.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTastyConfigSaved(true);
+        setTimeout(() => {
+          setTastyConfigSaved(false);
+          setTastyModalTab('oauth');
+        }, 1000);
+      } else {
+        setTastyError(data.error || 'Failed to save configuration');
+      }
+    } catch (err: any) {
+      setTastyError(err.message || 'Failed to save configuration');
     } finally {
       setTastyLoading(false);
     }
@@ -451,60 +546,12 @@ export default function App() {
       );
       setAccounts(fetchedAccounts);
 
-      // 2. Check Tastytrade Direct Connection & Accounts (with persistent auto-restore)
+      // 2. Check Tastytrade OAuth Direct Connection & Accounts
       let tastyAccs: SnapTradeAccount[] = [];
       try {
-        let tastyStatusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(uid)}`);
-        let tastyStatusData = await tastyStatusRes.json();
-        let isTastyConnected = Boolean(tastyStatusData.isConnected);
-
-        // If not currently connected on server (e.g. after an app update, container reboot, or restart), attempt silent restore
-        if (!isTastyConnected) {
-          let savedSession = getLocalTastySession();
-          if (!savedSession) {
-            try {
-              const userDoc = await getDoc(doc(db, 'users', uid));
-              if (userDoc.exists() && userDoc.data()?.tastytradeSession) {
-                savedSession = userDoc.data().tastytradeSession;
-                if (savedSession) saveLocalTastySession(savedSession);
-              }
-            } catch (e) {}
-          }
-
-          if (savedSession && (savedSession.sessionToken || savedSession.rememberToken) && savedSession.login) {
-            try {
-              console.log(`[Tastytrade] Restoring persistent connection for user ${savedSession.login}...`);
-              const restoreRes = await fetch('/api/tastytrade/restore-session', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  uid,
-                  login: savedSession.login,
-                  sessionToken: savedSession.sessionToken,
-                  rememberToken: savedSession.rememberToken
-                })
-              });
-              const restoreData = await restoreRes.json();
-              if (restoreRes.ok && restoreData.success) {
-                isTastyConnected = true;
-                tastyStatusData = { isConnected: true, user: restoreData.user };
-                const updatedSession: StoredTastytradeSession = {
-                  ...savedSession,
-                  sessionToken: restoreData.sessionToken || savedSession.sessionToken,
-                  rememberToken: restoreData.rememberToken || savedSession.rememberToken,
-                  user: restoreData.user || savedSession.user,
-                  updatedAt: new Date().toISOString()
-                };
-                saveLocalTastySession(updatedSession);
-                setDoc(doc(db, 'users', uid), { tastytradeSession: updatedSession }, { merge: true }).catch(() => {});
-              } else {
-                console.warn('[Tastytrade] Auto-restore did not succeed, keeping saved session metadata for next attempt.');
-              }
-            } catch (rErr) {
-              console.warn('[Tastytrade] Silent auto-restore network error:', rErr);
-            }
-          }
-        }
+        const tastyStatusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(uid)}`);
+        const tastyStatusData = await tastyStatusRes.json();
+        const isTastyConnected = Boolean(tastyStatusData.isConnected);
 
         setTastyConnected(isTastyConnected);
         setTastyUser(tastyStatusData.user || null);
@@ -2742,20 +2789,23 @@ export default function App() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Tastytrade Direct API Connect Dialog */}
+      {/* Tastytrade Direct OAuth 2.0 API Connect Dialog */}
       <Dialog open={tastyDialogOpen} onOpenChange={setTastyDialogOpen}>
-        <DialogContent className="bg-card border-border text-foreground max-w-md p-6">
+        <DialogContent className="bg-card border-border text-foreground max-w-lg p-6">
           <DialogHeader className="pb-3 border-b border-border/80">
             <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-loss/15 border border-loss/30 flex items-center justify-center text-lg">
+              <div className="w-10 h-10 rounded-xl bg-loss/15 border border-loss/30 flex items-center justify-center text-xl shadow-inner">
                 🍒
               </div>
               <div>
-                <DialogTitle className="text-foreground text-base font-bold">
-                  Tastytrade Direct API
+                <DialogTitle className="text-foreground text-base font-bold flex items-center gap-2">
+                  <span>Tastytrade Direct API</span>
+                  <span className="bg-brand/10 text-brand text-[10px] font-semibold px-2 py-0.5 rounded-full border border-brand/25">
+                    OAuth 2.0
+                  </span>
                 </DialogTitle>
                 <DialogDescription className="text-muted-foreground text-xs mt-0.5">
-                  Official REST connection for real-time futures options & live quotes.
+                  Official OAuth 2.0 connection with permanent background token refresh & live quotes.
                 </DialogDescription>
               </div>
             </div>
@@ -2763,22 +2813,29 @@ export default function App() {
 
           {tastyConnected ? (
             <div className="py-4 space-y-4">
-              <div className="bg-profit/10 border border-profit/30 rounded-xl p-4 flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-profit/20 flex items-center justify-center text-profit font-bold">
-                  ✓
+              <div className="bg-profit/10 border border-profit/30 rounded-xl p-4 flex items-center gap-3.5">
+                <div className="w-9 h-9 rounded-full bg-profit/20 flex items-center justify-center text-profit font-bold text-base shrink-0">
+                  <Check className="w-5 h-5" />
                 </div>
                 <div>
-                  <div className="text-xs font-bold text-foreground">Tastytrade API Connected</div>
-                  <div className="text-[11px] text-profit">
-                    Live positions, `/MES`, `/MNQ`, balances & mark quotes active.
+                  <div className="text-xs font-bold text-foreground flex items-center gap-2">
+                    <span>OAuth 2.0 Persistent Session Active</span>
+                    <span className="bg-profit/20 text-profit text-[10px] px-2 py-0.2 rounded-full font-medium">
+                      Never Expires
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                    Real-time futures, `/MES`, `/MNQ`, balances & automated token refresh online.
                   </div>
                   {tastyUser?.email && (
-                    <div className="text-[10px] text-muted-foreground font-mono mt-0.5">User: {tastyUser.email}</div>
+                    <div className="text-[10px] text-subtle-foreground font-mono mt-1">
+                      Account: {tastyUser.email}
+                    </div>
                   )}
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-2">
+              <div className="flex justify-end gap-2 pt-2 border-t border-border/80">
                 <Button
                   onClick={() => {
                     if (user) fetchAllData(user.uid);
@@ -2800,7 +2857,56 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <form onSubmit={handleTastytradeLogin} className="py-3 space-y-4">
+            <div className="py-3 space-y-4">
+              {/* Tab Navigation */}
+              <div className="flex bg-surface-2 p-1 rounded-xl border border-border/70 text-xs">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTastyModalTab('oauth');
+                    setTastyError('');
+                  }}
+                  className={`flex-1 py-1.5 px-2 rounded-lg font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    tastyModalTab === 'oauth'
+                      ? 'bg-card text-foreground shadow-sm border border-border/50'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <Lock className="w-3.5 h-3.5 text-brand" />
+                  <span>OAuth 2.0 (Recommended)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTastyModalTab('manual');
+                    setTastyError('');
+                  }}
+                  className={`flex-1 py-1.5 px-2 rounded-lg font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    tastyModalTab === 'manual'
+                      ? 'bg-card text-foreground shadow-sm border border-border/50'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  <Key className="w-3.5 h-3.5 text-warning" />
+                  <span>Personal Token</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTastyModalTab('config');
+                    setTastyError('');
+                  }}
+                  className={`py-1.5 px-2.5 rounded-lg font-semibold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                    tastyModalTab === 'config'
+                      ? 'bg-card text-foreground shadow-sm border border-border/50'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                  title="Configure OAuth App Credentials"
+                >
+                  <Settings className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
               {tastyError && (
                 <div className="bg-loss/10 border border-loss/30 text-loss text-xs p-3 rounded-xl flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 text-loss shrink-0 mt-0.5" />
@@ -2808,103 +2914,113 @@ export default function App() {
                 </div>
               )}
 
-              {tastyRequires2FA ? (
-                <div className="space-y-3">
-                  <div className="bg-warning/10 border border-warning/30 text-warning text-xs p-3 rounded-xl">
-                    <div className="font-semibold text-warning mb-1">🔐 2FA Verification Required</div>
-                    <div>Please enter the 6-digit verification code from your SMS or Authenticator App.</div>
+              {/* TAB 1: OAuth 2.0 One-Click Redirect */}
+              {tastyModalTab === 'oauth' && (
+                <div className="space-y-4">
+                  <div className="bg-surface-2 border border-border/80 rounded-xl p-4 text-xs space-y-2">
+                    <div className="font-semibold text-foreground flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-profit" />
+                      <span>Zero Password Storage & Permanent Persistence</span>
+                    </div>
+                    <p className="text-muted-foreground text-[11.5px] leading-relaxed">
+                      You will be securely redirected to Tastytrade’s login portal to grant Alphatrack read access to your portfolio.
+                    </p>
+                    <ul className="text-muted-foreground text-[11px] space-y-1 pl-4 list-disc">
+                      <li>Connection stays active indefinitely with automatic silent token refresh.</li>
+                      <li>No recurring 2FA challenges or 24-hour logouts.</li>
+                      <li>Real-time sync of equity, index & micro futures options (`/MES`, `/MNQ`).</li>
+                    </ul>
                   </div>
 
-                  <div>
-                    <label htmlFor="tasty-otp" className="text-xs font-semibold text-muted-foreground block mb-1.5">
-                      6-Digit Security Code (OTP)
-                    </label>
-                    <input
-                      id="tasty-otp"
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      maxLength={6}
-                      autoFocus
-                      required
-                      placeholder="123456"
-                      value={tastyOtp}
-                      onChange={(e) => setTastyOtp(e.target.value.replace(/\D/g, ''))}
-                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-4 py-2.5 text-center text-xl font-mono tracking-widest text-foreground outline-none transition-colors"
-                    />
-                  </div>
-
-                  <div className="flex justify-between items-center pt-2">
+                  <div className="pt-2 flex justify-between items-center border-t border-border/80">
                     <button
                       type="button"
-                      onClick={() => {
-                        setTastyRequires2FA(false);
-                        setTastyOtp('');
-                      }}
-                      className="text-xs text-muted-foreground hover:text-foreground underline cursor-pointer"
+                      onClick={() => setTastyModalTab('config')}
+                      className="text-[11px] text-muted-foreground hover:text-foreground underline cursor-pointer"
                     >
-                      Back to Username
+                      App Credentials / Settings →
                     </button>
-                    <Button
-                      type="submit"
-                      disabled={tastyLoading || tastyOtp.length < 6}
-                      className="bg-loss-fill hover:bg-loss-fill/85 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
-                    >
-                      {tastyLoading ? <Spinner size="sm" label="" className="mr-1" /> : null}
-                      Verify & Connect
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setTastyDialogOpen(false)}
+                        className="border-border text-muted-foreground text-xs h-9 cursor-pointer"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={handleStartTastyOAuth}
+                        disabled={tastyLoading}
+                        className="bg-loss-fill hover:bg-loss-fill/85 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shadow-sm"
+                      >
+                        {tastyLoading ? <Spinner size="sm" label="" /> : <ExternalLink className="w-3.5 h-3.5" />}
+                        <span>Authorize with Tastytrade</span>
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              ) : (
-                <div className="space-y-3">
-                  <div>
-                    <label htmlFor="tasty-login" className="text-xs font-semibold text-muted-foreground block mb-1">
-                      Tastytrade Username or Email
-                    </label>
-                    <input
-                      id="tasty-login"
-                      type="text"
-                      required
-                      autoComplete="username"
-                      placeholder="e.g. trader123 or you@email.com"
-                      value={tastyLogin}
-                      onChange={(e) => setTastyLogin(e.target.value)}
-                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs text-foreground outline-none transition-colors"
-                    />
+              )}
+
+              {/* TAB 2: Personal Refresh Token Manual Grant */}
+              {tastyModalTab === 'manual' && (
+                <form onSubmit={handleTastyManualConnect} className="space-y-3.5">
+                  <div className="bg-surface-2 border border-border/80 rounded-xl p-3 text-xs text-muted-foreground">
+                    <div className="font-semibold text-foreground mb-1 flex items-center gap-1.5">
+                      <Key className="w-3.5 h-3.5 text-warning" />
+                      <span>Tastytrade Personal OAuth Grant</span>
+                    </div>
+                    <div>
+                      Generate an API Grant under <span className="font-mono text-foreground">my.tastytrade.com → Manage → API → OAuth Applications</span> and paste your Refresh Token below.
+                    </div>
                   </div>
 
                   <div>
-                    <label htmlFor="tasty-password" className="text-xs font-semibold text-muted-foreground block mb-1">
-                      Password
+                    <label htmlFor="tasty-refresh-token" className="text-xs font-semibold text-muted-foreground block mb-1">
+                      Refresh Token *
                     </label>
                     <input
-                      id="tasty-password"
+                      id="tasty-refresh-token"
                       type="password"
                       required
-                      autoComplete="current-password"
-                      placeholder="••••••••••••"
-                      value={tastyPassword}
-                      onChange={(e) => setTastyPassword(e.target.value)}
-                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs text-foreground outline-none transition-colors"
+                      placeholder="Paste your OAuth Refresh Token"
+                      value={tastyRefreshTokenInput}
+                      onChange={(e) => setTastyRefreshTokenInput(e.target.value)}
+                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs font-mono text-foreground outline-none transition-colors"
                     />
                   </div>
 
-                  <div className="flex items-center justify-between pt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => setTastyRequires2FA(true)}
-                      className="text-[11px] text-loss hover:text-loss underline cursor-pointer"
-                    >
-                      Enter 2FA / Device Code directly →
-                    </button>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label htmlFor="tasty-opt-client-id" className="text-[11px] font-semibold text-muted-foreground block mb-1">
+                        Client ID (Optional override)
+                      </label>
+                      <input
+                        id="tasty-opt-client-id"
+                        type="text"
+                        placeholder="Default from server"
+                        value={tastyClientIdInput}
+                        onChange={(e) => setTastyClientIdInput(e.target.value)}
+                        className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3 py-1.5 text-xs text-foreground outline-none transition-colors"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="tasty-opt-client-sec" className="text-[11px] font-semibold text-muted-foreground block mb-1">
+                        Client Secret (Optional)
+                      </label>
+                      <input
+                        id="tasty-opt-client-sec"
+                        type="password"
+                        placeholder="••••••••"
+                        value={tastyClientSecretInput}
+                        onChange={(e) => setTastyClientSecretInput(e.target.value)}
+                        className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3 py-1.5 text-xs text-foreground outline-none transition-colors"
+                      />
+                    </div>
                   </div>
 
-                  <div className="text-[11px] text-subtle-foreground flex items-center gap-1.5 pt-1">
-                    <ShieldCheck className="w-4 h-4 text-profit shrink-0" />
-                    <span>Credentials authenticate directly with Tastytrade API over TLS encryption.</span>
-                  </div>
-
-                  <div className="flex justify-end gap-2 pt-3 border-t border-border/80">
+                  <div className="flex justify-end gap-2 pt-2 border-t border-border/80">
                     <Button
                       type="button"
                       variant="outline"
@@ -2915,16 +3031,90 @@ export default function App() {
                     </Button>
                     <Button
                       type="submit"
-                      disabled={tastyLoading || !tastyLogin || !tastyPassword}
+                      disabled={tastyLoading || !tastyRefreshTokenInput.trim()}
                       className="bg-loss-fill hover:bg-loss-fill/85 text-white text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
                     >
                       {tastyLoading ? <Spinner size="sm" label="" className="mr-1" /> : null}
-                      Connect Tastytrade
+                      Connect with Token
                     </Button>
                   </div>
-                </div>
+                </form>
               )}
-            </form>
+
+              {/* TAB 3: App Configuration (Client ID & Client Secret) */}
+              {tastyModalTab === 'config' && (
+                <form onSubmit={handleTastySaveConfig} className="space-y-3.5">
+                  <div className="bg-surface-2 border border-border/80 rounded-xl p-3 text-xs text-muted-foreground">
+                    <div className="font-semibold text-foreground mb-1 flex items-center gap-1.5">
+                      <Settings className="w-3.5 h-3.5 text-brand" />
+                      <span>Tastytrade OAuth App Credentials</span>
+                    </div>
+                    <p className="text-[11.5px] leading-relaxed">
+                      Register an OAuth App at <span className="text-foreground font-mono">my.tastytrade.com</span> with redirect URI:
+                    </p>
+                    <code className="block bg-background/80 px-2.5 py-1.5 rounded-lg text-[10.5px] font-mono text-brand border border-border/60 mt-1 select-all">
+                      {window.location.origin}/api/tastytrade/oauth/callback
+                    </code>
+                  </div>
+
+                  <div>
+                    <label htmlFor="tasty-cfg-client-id" className="text-xs font-semibold text-muted-foreground block mb-1">
+                      Tastytrade Client ID *
+                    </label>
+                    <input
+                      id="tasty-cfg-client-id"
+                      type="text"
+                      required
+                      placeholder="e.g. tt_app_xxxxxxxxxxxx"
+                      value={tastyClientIdInput}
+                      onChange={(e) => setTastyClientIdInput(e.target.value)}
+                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs font-mono text-foreground outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="tasty-cfg-client-secret" className="text-xs font-semibold text-muted-foreground block mb-1">
+                      Tastytrade Client Secret *
+                    </label>
+                    <input
+                      id="tasty-cfg-client-secret"
+                      type="password"
+                      required
+                      placeholder="••••••••••••••••"
+                      value={tastyClientSecretInput}
+                      onChange={(e) => setTastyClientSecretInput(e.target.value)}
+                      className="w-full bg-surface-2 border border-border focus:border-loss rounded-xl px-3.5 py-2 text-xs font-mono text-foreground outline-none transition-colors"
+                    />
+                  </div>
+
+                  {tastyConfigSaved && (
+                    <div className="text-xs text-profit font-semibold flex items-center gap-1.5">
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Configuration saved successfully! Redirecting to OAuth...</span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-2 pt-2 border-t border-border/80">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setTastyModalTab('oauth')}
+                      className="border-border text-muted-foreground text-xs h-9 cursor-pointer"
+                    >
+                      Back
+                    </Button>
+                    <Button
+                      type="submit"
+                      disabled={tastyLoading || !tastyClientIdInput.trim() || !tastyClientSecretInput.trim()}
+                      className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold px-5 h-9 cursor-pointer disabled:opacity-50"
+                    >
+                      {tastyLoading ? <Spinner size="sm" label="" className="mr-1" /> : null}
+                      Save Credentials
+                    </Button>
+                  </div>
+                </form>
+              )}
+            </div>
           )}
         </DialogContent>
       </Dialog>

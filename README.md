@@ -7,7 +7,7 @@ Alphatrack is a high-performance portfolio intelligence and options trading jour
 ## ✨ Features
 
 - **Multi-Broker Connectivity**:
-  - **Tastytrade Direct Integration**: Direct authentication (session & remember token), real-time balances, positions, orders, and full historical transaction sync.
+  - **Tastytrade Direct Integration (OAuth 2.0)**: Official 3-legged OAuth 2.0 flow & personal API grant support with automated silent 15-minute token refresh. Permanent connection persistence with zero session dropouts or recurring 2FA interruptions.
   - **SnapTrade Multi-Broker Portal**: Connect 20+ brokerages (Interactive Brokers, Charles Schwab, Robinhood, Fidelity, Webull, E*TRADE, Alpaca, and more).
 - **Intelligent Options & Strategy Parser**:
   - Automatically identifies and groups multi-leg options strategies:
@@ -75,6 +75,11 @@ APP_URL="http://localhost:3000"
 # SnapTrade Configuration (https://dashboard.snaptrade.com)
 SNAPTRADE_CLIENT_ID="your_snaptrade_client_id"
 SNAPTRADE_CONSUMER_KEY="your_snaptrade_consumer_key"
+
+# Tastytrade OAuth 2.0 Configuration (https://my.tastytrade.com)
+TASTYTRADE_CLIENT_ID="your_tastytrade_client_id"
+TASTYTRADE_CLIENT_SECRET="your_tastytrade_client_secret"
+TASTYTRADE_REDIRECT_URI=""
 
 # Optional Firebase Overrides
 # FIREBASE_PROJECT_ID="your_firebase_project_id"

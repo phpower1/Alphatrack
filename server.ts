@@ -97,12 +97,22 @@ async function saveUserToFirestore(uid: string, data: { userId: string; userSecr
 // Local cache file for Tastytrade direct sessions
 const TASTYTRADE_SESSIONS_FILE = path.join(process.cwd(), ".tastytrade_sessions.json");
 
+let tastytradeClientId = process.env.TASTYTRADE_CLIENT_ID || "";
+let tastytradeClientSecret = process.env.TASTYTRADE_CLIENT_SECRET || "";
+let tastytradeRedirectUri = process.env.TASTYTRADE_REDIRECT_URI || "";
+
 interface TastytradeSessionData {
-  sessionToken: string;
-  rememberToken?: string;
+  accessToken?: string;
+  refreshToken?: string;
+  expiresAt?: number; // Epoch timestamp in ms
+  clientId?: string;
+  clientSecret?: string;
   user?: any;
   login?: string;
   updatedAt: string;
+  // Legacy session tokens fallback
+  sessionToken?: string;
+  rememberToken?: string;
 }
 
 function loadTastytradeSessionsCache(): Record<string, TastytradeSessionData> {
@@ -122,6 +132,76 @@ function saveTastytradeSessionsCache(cache: Record<string, TastytradeSessionData
 
 let tastytradeSessionsCache = loadTastytradeSessionsCache();
 
+function getTastytradeAuthHeader(session: TastytradeSessionData): string {
+  if (session.accessToken) {
+    return session.accessToken.startsWith("Bearer ") ? session.accessToken : `Bearer ${session.accessToken}`;
+  }
+  if (session.sessionToken) {
+    return session.sessionToken;
+  }
+  return "";
+}
+
+async function refreshTastytradeOAuthToken(uid: string, session: TastytradeSessionData): Promise<TastytradeSessionData | null> {
+  if (!session.refreshToken) return null;
+  const clientId = session.clientId || tastytradeClientId;
+  const clientSecret = session.clientSecret || tastytradeClientSecret;
+
+  try {
+    console.log(`[Tastytrade OAuth] Refreshing access token for user ${uid}...`);
+    const tokenRes = await axios.post(`${TASTYTRADE_API_BASE}/oauth/token`, {
+      grant_type: "refresh_token",
+      refresh_token: session.refreshToken,
+      client_id: clientId || undefined,
+      client_secret: clientSecret || undefined
+    }, {
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "Alphatrack/1.0"
+      },
+      timeout: 10000
+    });
+
+    const data = tokenRes.data?.data || tokenRes.data || {};
+    const newAccessToken = data.access_token || data["access-token"] || data.accessToken;
+    const newRefreshToken = data.refresh_token || data["refresh-token"] || data.refreshToken || session.refreshToken;
+    const expiresIn = Number(data.expires_in || data["expires-in"] || 900); // 15 mins default
+
+    if (newAccessToken) {
+      session = {
+        ...session,
+        accessToken: newAccessToken,
+        refreshToken: newRefreshToken,
+        expiresAt: Date.now() + (expiresIn * 1000),
+        updatedAt: new Date().toISOString()
+      };
+
+      // Also ensure user profile info is up to date
+      if (!session.user) {
+        try {
+          const userRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
+            headers: {
+              Authorization: `Bearer ${newAccessToken}`,
+              Accept: "application/json",
+              "User-Agent": "Alphatrack/1.0"
+            },
+            timeout: 5000
+          });
+          session.user = userRes.data?.data || userRes.data;
+        } catch (uErr) {}
+      }
+
+      await saveTastytradeSession(uid, session);
+      console.log(`[Tastytrade OAuth] Successfully refreshed access token for user ${uid}`);
+      return session;
+    }
+  } catch (err: any) {
+    console.error(`[Tastytrade OAuth] Refresh token error for ${uid}:`, err.response?.data || err.message);
+  }
+  return null;
+}
+
 async function getTastytradeSession(uid: string): Promise<TastytradeSessionData | null> {
   if (!uid) return null;
   let session = tastytradeSessionsCache[uid];
@@ -137,14 +217,29 @@ async function getTastytradeSession(uid: string): Promise<TastytradeSessionData 
     }
   }
 
-  // Validate session or attempt silent refresh with rememberToken if token expired
-  if (session && session.sessionToken) {
+  if (!session) return null;
+
+  // 1. Check OAuth 2.0 session (has refreshToken)
+  if (session.refreshToken) {
+    const isExpired = !session.accessToken || !session.expiresAt || (Date.now() >= session.expiresAt - 120000); // 2 min buffer
+    if (isExpired) {
+      const refreshed = await refreshTastytradeOAuthToken(uid, session);
+      if (refreshed) {
+        session = refreshed;
+      }
+    }
+    return session;
+  }
+
+  // 2. Fallback for legacy session token
+  if (session.sessionToken) {
     try {
       // Test if session is still alive
       await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
         headers: {
           Authorization: session.sessionToken,
-          Accept: "application/json"
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
         },
         timeout: 4000
       });
@@ -986,10 +1081,279 @@ async function startServer() {
   });
 
   // ==========================================
-  // TASTYTRADE DIRECT OFFICIAL REST API PROXY
+  // TASTYTRADE DIRECT OAUTH 2.0 & API PROXY
   // ==========================================
 
-  // T1. Tastytrade Login / 2FA verification
+  // T0. Tastytrade OAuth Status & Configuration
+  app.get("/api/tastytrade/config", (req, res) => {
+    const isConfigured = Boolean(tastytradeClientId && tastytradeClientSecret);
+    res.json({
+      isConfigured,
+      clientIdMasked: tastytradeClientId ? `${tastytradeClientId.slice(0, 6)}...${tastytradeClientId.slice(-4)}` : null,
+      redirectUri: tastytradeRedirectUri || null
+    });
+  });
+
+  // T0.1 Update Tastytrade OAuth Credentials dynamically
+  app.post("/api/tastytrade/configure", (req, res) => {
+    const { clientId, clientSecret, redirectUri } = req.body;
+    if (clientId) tastytradeClientId = clientId.trim();
+    if (clientSecret) tastytradeClientSecret = clientSecret.trim();
+    if (redirectUri) tastytradeRedirectUri = redirectUri.trim();
+
+    console.log(`[Tastytrade OAuth] Configured Client ID: ${tastytradeClientId ? `${tastytradeClientId.slice(0, 6)}...` : 'empty'}`);
+    res.json({
+      success: true,
+      isConfigured: Boolean(tastytradeClientId && tastytradeClientSecret)
+    });
+  });
+
+  // T0.2 Generate Tastytrade OAuth 2.0 Authorization URL
+  app.get("/api/tastytrade/oauth/url", (req, res) => {
+    const uid = (req.query.uid as string) || "";
+    if (!uid) {
+      return res.status(400).json({ error: "Missing user UID in request" });
+    }
+
+    const clientId = (req.query.clientId as string) || tastytradeClientId;
+    if (!clientId) {
+      return res.status(400).json({ 
+        error: "Tastytrade OAuth Client ID is not configured. Please configure your Tastytrade Client ID and Secret in settings or .env file." 
+      });
+    }
+
+    const host = req.get("host") || "localhost:3000";
+    const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
+    const defaultCallback = `${protocol}://${host}/api/tastytrade/oauth/callback`;
+    const redirectUri = (req.query.redirectUri as string) || tastytradeRedirectUri || defaultCallback;
+
+    // Tastytrade OAuth Authorization URL
+    const authUrl = `https://my.tastytrade.com/oauth/authorize?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${encodeURIComponent(uid)}`;
+
+    console.log(`[Tastytrade OAuth] Generated OAuth URL for UID: ${uid} (Callback: ${redirectUri})`);
+    res.json({
+      authUrl,
+      redirectUri,
+      clientId: `${clientId.slice(0, 6)}...`
+    });
+  });
+
+  // T0.3 OAuth 2.0 Callback Handler (Exchanges code for tokens)
+  app.get("/api/tastytrade/oauth/callback", async (req, res) => {
+    const code = (req.query.code as string) || "";
+    const state = (req.query.state as string) || ""; // Carries the Firebase UID
+    const errorParam = (req.query.error as string) || (req.query.error_description as string) || "";
+
+    if (errorParam) {
+      console.error(`[Tastytrade OAuth Callback] Error from Tastytrade:`, errorParam);
+      return res.status(400).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Tastytrade Authorization Failed</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+        <body style="background:#0b0e14;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:16px;box-sizing:border-box;">
+          <div style="text-align:center;padding:32px;background:#131722;border-radius:16px;border:1px solid #ef444455;max-width:420px;width:100%;">
+            <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
+            <h2 style="color:#ef4444;margin:0 0 8px 0;font-size:18px;">Tastytrade Connection Denied</h2>
+            <p style="color:#94a3b8;font-size:13px;line-height:1.5;margin-bottom:20px;">${errorParam}</p>
+            <button onclick="window.close()" style="background:#ef4444;color:#fff;border:none;padding:10px 24px;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">Close Window</button>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    if (!code || !state) {
+      return res.status(400).send("Missing code or state parameter in OAuth callback");
+    }
+
+    const uid = state;
+    const host = req.get("host") || "localhost:3000";
+    const protocol = req.protocol === "https" || req.get("x-forwarded-proto") === "https" ? "https" : "http";
+    const defaultCallback = `${protocol}://${host}/api/tastytrade/oauth/callback`;
+    const redirectUri = tastytradeRedirectUri || defaultCallback;
+
+    try {
+      console.log(`[Tastytrade OAuth] Exchanging authorization code for UID: ${uid}...`);
+      const tokenRes = await axios.post(`${TASTYTRADE_API_BASE}/oauth/token`, {
+        grant_type: "authorization_code",
+        code,
+        client_id: tastytradeClientId,
+        client_secret: tastytradeClientSecret,
+        redirect_uri: redirectUri
+      }, {
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
+        },
+        timeout: 15000
+      });
+
+      const tokenData = tokenRes.data?.data || tokenRes.data || {};
+      const accessToken = tokenData.access_token || tokenData["access-token"] || tokenData.accessToken;
+      const refreshToken = tokenData.refresh_token || tokenData["refresh-token"] || tokenData.refreshToken;
+      const expiresIn = Number(tokenData.expires_in || tokenData["expires-in"] || 900);
+
+      if (!accessToken || !refreshToken) {
+        throw new Error("Tastytrade OAuth did not return access_token or refresh_token");
+      }
+
+      // Fetch user info with new Bearer token
+      let user = null;
+      try {
+        const userRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+            "User-Agent": "Alphatrack/1.0"
+          },
+          timeout: 5000
+        });
+        user = userRes.data?.data || userRes.data;
+      } catch (uErr: any) {
+        console.warn(`[Tastytrade OAuth] Could not fetch customer info immediately:`, uErr.message);
+      }
+
+      const sessionData: TastytradeSessionData = {
+        accessToken,
+        refreshToken,
+        expiresAt: Date.now() + (expiresIn * 1000),
+        clientId: tastytradeClientId,
+        clientSecret: tastytradeClientSecret,
+        user,
+        login: user?.email || user?.["external-id"] || undefined,
+        updatedAt: new Date().toISOString()
+      };
+
+      await saveTastytradeSession(uid, sessionData);
+      console.log(`[Tastytrade OAuth] Successfully authenticated and saved OAuth 2.0 session for user ${uid}`);
+
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <title>Tastytrade Connected</title>
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+        </head>
+        <body style="background:#0b0e14;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:16px;box-sizing:border-box;">
+          <div style="text-align:center;padding:32px;background:#131722;border-radius:16px;border:1px solid #22c55e55;max-width:420px;width:100%;">
+            <div style="font-size:36px;margin-bottom:12px;">🍒</div>
+            <h2 style="color:#22c55e;margin:0 0 8px 0;font-size:18px;">Tastytrade Connected!</h2>
+            <p style="color:#94a3b8;font-size:13px;line-height:1.5;margin-bottom:16px;">OAuth 2.0 persistent session successfully authorized. Alphatrack is syncing your live accounts and positions.</p>
+            <div style="font-size:11px;color:#64748b;">This window will close automatically...</div>
+          </div>
+          <script>
+            try {
+              if (window.opener && !window.opener.closed) {
+                window.opener.postMessage({ type: 'TASTYTRADE_OAUTH_SUCCESS', uid: '${uid}' }, '*');
+                setTimeout(() => window.close(), 1200);
+              } else {
+                setTimeout(() => { window.location.href = '/'; }, 1500);
+              }
+            } catch (e) {
+              setTimeout(() => { window.location.href = '/'; }, 1500);
+            }
+          </script>
+        </body>
+        </html>
+      `);
+    } catch (err: any) {
+      console.error(`[Tastytrade OAuth Callback Error]:`, err.response?.data || err.message);
+      const errMsg = err.response?.data?.error?.message || err.response?.data?.error_description || err.message || "Failed to exchange OAuth token";
+      return res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head><title>Tastytrade OAuth Error</title><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+        <body style="background:#0b0e14;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;padding:16px;box-sizing:border-box;">
+          <div style="text-align:center;padding:32px;background:#131722;border-radius:16px;border:1px solid #ef444455;max-width:420px;width:100%;">
+            <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
+            <h2 style="color:#ef4444;margin:0 0 8px 0;font-size:18px;">Authentication Failed</h2>
+            <p style="color:#94a3b8;font-size:13px;line-height:1.5;margin-bottom:20px;">${errMsg}</p>
+            <button onclick="window.close()" style="background:#ef4444;color:#fff;border:none;padding:10px 24px;border-radius:8px;font-size:13px;font-weight:bold;cursor:pointer;">Close Window</button>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+  });
+
+  // T0.4 Manual Personal OAuth Grant / Refresh Token Connection
+  app.post("/api/tastytrade/oauth/manual", async (req, res) => {
+    const { uid, refreshToken, clientId, clientSecret } = req.body;
+    if (!uid || !refreshToken) {
+      return res.status(400).json({ error: "UID and Refresh Token are required" });
+    }
+
+    const effectiveClientId = clientId ? clientId.trim() : tastytradeClientId;
+    const effectiveClientSecret = clientSecret ? clientSecret.trim() : tastytradeClientSecret;
+
+    try {
+      console.log(`[Tastytrade OAuth Manual] Authenticating user ${uid} with personal Refresh Token...`);
+      const tokenRes = await axios.post(`${TASTYTRADE_API_BASE}/oauth/token`, {
+        grant_type: "refresh_token",
+        refresh_token: refreshToken.trim(),
+        client_id: effectiveClientId || undefined,
+        client_secret: effectiveClientSecret || undefined
+      }, {
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
+        },
+        timeout: 10000
+      });
+
+      const tokenData = tokenRes.data?.data || tokenRes.data || {};
+      const accessToken = tokenData.access_token || tokenData["access-token"] || tokenData.accessToken;
+      const newRefreshToken = tokenData.refresh_token || tokenData["refresh-token"] || tokenData.refreshToken || refreshToken.trim();
+      const expiresIn = Number(tokenData.expires_in || tokenData["expires-in"] || 900);
+
+      if (!accessToken) {
+        return res.status(500).json({ error: "No access token received from Tastytrade" });
+      }
+
+      // Fetch user profile info
+      let user = null;
+      try {
+        const userRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: "application/json",
+            "User-Agent": "Alphatrack/1.0"
+          },
+          timeout: 5000
+        });
+        user = userRes.data?.data || userRes.data;
+      } catch (uErr) {}
+
+      const sessionData: TastytradeSessionData = {
+        accessToken,
+        refreshToken: newRefreshToken,
+        expiresAt: Date.now() + (expiresIn * 1000),
+        clientId: effectiveClientId || undefined,
+        clientSecret: effectiveClientSecret || undefined,
+        user,
+        login: user?.email || undefined,
+        updatedAt: new Date().toISOString()
+      };
+
+      await saveTastytradeSession(uid, sessionData);
+      console.log(`[Tastytrade OAuth Manual] Session saved for user ${uid}`);
+
+      res.json({
+        success: true,
+        user,
+        accessTokenMasked: `${accessToken.slice(0, 6)}...`
+      });
+    } catch (err: any) {
+      console.error(`[Tastytrade OAuth Manual Error]:`, err.response?.data || err.message);
+      res.status(err.response?.status || 500).json({ 
+        error: err.response?.data?.error?.message || err.response?.data?.error_description || err.message || "Failed to authenticate with Refresh Token" 
+      });
+    }
+  });
+
+  // T1. Legacy Tastytrade Login / 2FA verification fallback
   app.post("/api/tastytrade/login", async (req, res) => {
     const { login, password, otp, rememberMe, uid } = req.body;
 
@@ -1072,7 +1436,6 @@ async function startServer() {
         });
       }
 
-      // Other authentication error (e.g. invalid password)
       const errMsg = sessionRes.data?.error?.message || sessionRes.data?.message || "Invalid Tastytrade credentials";
       console.warn(`[Tastytrade] Login rejected:`, errMsg);
       return res.status(sessionRes.status || 401).json({ error: errMsg });
@@ -1080,105 +1443,6 @@ async function startServer() {
     } catch (err: any) {
       console.error(`[Tastytrade] Login error:`, err.response?.data || err.message);
       res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || err.message || "Failed to authenticate with Tastytrade" });
-    }
-  });
-
-  // T1.1 Tastytrade Restore Session with Token or Remember Token (Silent Re-auth)
-  app.post("/api/tastytrade/restore-session", async (req, res) => {
-    const { uid, login, rememberToken, sessionToken } = req.body;
-    if (!uid) {
-      return res.status(400).json({ error: "Missing uid" });
-    }
-
-    try {
-      // 1. If an existing sessionToken was passed, test if it's still alive (24h validity)
-      if (sessionToken) {
-        try {
-          const testRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me`, {
-            headers: {
-              Authorization: sessionToken,
-              Accept: "application/json"
-            },
-            timeout: 5000
-          });
-
-          if (testRes.status === 200) {
-            const user = testRes.data?.data;
-            const sessionData: TastytradeSessionData = {
-              sessionToken,
-              rememberToken,
-              user,
-              login: login ? login.trim() : undefined,
-              updatedAt: new Date().toISOString()
-            };
-            await saveTastytradeSession(uid, sessionData);
-            console.log(`[Tastytrade] Reused active sessionToken for ${login || uid}`);
-            return res.json({
-              success: true,
-              user,
-              login: login ? login.trim() : undefined,
-              sessionToken,
-              rememberToken
-            });
-          }
-        } catch (sErr) {
-          console.log(`[Tastytrade] Cached sessionToken expired for ${login || uid}, attempting remember-token refresh...`);
-        }
-      }
-
-      // 2. Re-authenticate using rememberToken
-      if (rememberToken && login) {
-        console.log(`[Tastytrade] Restoring persistent session for user ${login} (${uid})...`);
-        const refreshRes = await axios.post(`${TASTYTRADE_API_BASE}/sessions`, {
-          login: login.trim(),
-          "remember-token": rememberToken,
-          remember_token: rememberToken,
-          "remember-me": true,
-          remember_me: true
-        }, {
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-            "User-Agent": "Alphatrack/1.0"
-          },
-          validateStatus: (status) => status < 500
-        });
-
-        if (refreshRes.status === 201) {
-          const newSessionToken = refreshRes.data?.data?.["session-token"];
-          const newRememberToken = refreshRes.data?.data?.["remember-token"] || rememberToken;
-          const user = refreshRes.data?.data?.user;
-
-          if (newSessionToken) {
-            const sessionData: TastytradeSessionData = {
-              sessionToken: newSessionToken,
-              rememberToken: newRememberToken,
-              user,
-              login: login.trim(),
-              updatedAt: new Date().toISOString()
-            };
-            await saveTastytradeSession(uid, sessionData);
-            console.log(`[Tastytrade] Successfully restored session with remember-token for user ${user?.email || login}`);
-            return res.json({
-              success: true,
-              user,
-              login: login.trim(),
-              sessionToken: newSessionToken,
-              rememberToken: newRememberToken,
-              sessionTokenMasked: `${newSessionToken.slice(0, 6)}...`
-            });
-          }
-        }
-
-        const errMsg = refreshRes.data?.error?.message || refreshRes.data?.message || "Failed to restore Tastytrade session";
-        console.warn(`[Tastytrade] Restore session failed:`, errMsg);
-        return res.status(refreshRes.status || 401).json({ error: errMsg });
-      }
-
-      return res.status(400).json({ error: "Missing rememberToken or sessionToken" });
-    } catch (err: any) {
-      console.error(`[Tastytrade] Restore session error:`, err.response?.data || err.message);
-      res.status(err.response?.status || 500).json({ error: err.response?.data?.error?.message || err.message || "Failed to restore session" });
     }
   });
 
@@ -1190,14 +1454,15 @@ async function startServer() {
     }
 
     const session = await getTastytradeSession(uid);
-    if (!session || !session.sessionToken) {
+    if (!session || (!session.accessToken && !session.sessionToken)) {
       return res.json({ isConnected: false });
     }
 
     res.json({
       isConnected: true,
       user: session.user,
-      login: session.login,
+      login: session.login || session.user?.email,
+      authType: session.refreshToken ? "oauth" : "legacy",
       updatedAt: session.updatedAt
     });
   });
@@ -1207,15 +1472,16 @@ async function startServer() {
     const uid = (req.query.uid as string) || "";
     const session = await getTastytradeSession(uid);
 
-    if (!session || !session.sessionToken) {
-      return res.status(401).json({ error: "Tastytrade account is not connected. Please log in." });
+    if (!session || (!session.accessToken && !session.sessionToken)) {
+      return res.status(401).json({ error: "Tastytrade account is not connected. Please connect with OAuth." });
     }
 
     try {
       const accRes = await axios.get(`${TASTYTRADE_API_BASE}/customers/me/accounts`, {
         headers: {
-          Authorization: session.sessionToken,
-          Accept: "application/json"
+          Authorization: getTastytradeAuthHeader(session),
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
         }
       });
 
@@ -1256,15 +1522,16 @@ async function startServer() {
     const uid = (req.query.uid as string) || "";
     const session = await getTastytradeSession(uid);
 
-    if (!session || !session.sessionToken) {
+    if (!session || (!session.accessToken && !session.sessionToken)) {
       return res.status(401).json({ error: "Tastytrade account not connected" });
     }
 
     try {
       const posRes = await axios.get(`${TASTYTRADE_API_BASE}/accounts/${cleanAccNum}/positions`, {
         headers: {
-          Authorization: session.sessionToken,
-          Accept: "application/json"
+          Authorization: getTastytradeAuthHeader(session),
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
         }
       });
 
@@ -1351,15 +1618,16 @@ async function startServer() {
     const uid = (req.query.uid as string) || "";
     const session = await getTastytradeSession(uid);
 
-    if (!session || !session.sessionToken) {
+    if (!session || (!session.accessToken && !session.sessionToken)) {
       return res.status(401).json({ error: "Tastytrade account not connected" });
     }
 
     try {
       const balRes = await axios.get(`${TASTYTRADE_API_BASE}/accounts/${cleanAccNum}/balances`, {
         headers: {
-          Authorization: session.sessionToken,
-          Accept: "application/json"
+          Authorization: getTastytradeAuthHeader(session),
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
         }
       });
 
@@ -1393,7 +1661,7 @@ async function startServer() {
     const startDate = (req.query.startDate as string) || undefined;
     const session = await getTastytradeSession(uid);
 
-    if (!session || !session.sessionToken) {
+    if (!session || (!session.accessToken && !session.sessionToken)) {
       return res.status(401).json({ error: "Tastytrade account not connected" });
     }
 
@@ -1405,8 +1673,9 @@ async function startServer() {
 
       const txRes = await axios.get(url, {
         headers: {
-          Authorization: session.sessionToken,
-          Accept: "application/json"
+          Authorization: getTastytradeAuthHeader(session),
+          Accept: "application/json",
+          "User-Agent": "Alphatrack/1.0"
         }
       });
 

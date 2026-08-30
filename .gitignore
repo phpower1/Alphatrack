@@ -7,3 +7,5 @@ coverage/
 .env*
 !.env.example
 .snaptrade_users.json
+.tastytrade_sessions.json
+
