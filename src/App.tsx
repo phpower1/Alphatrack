@@ -45,6 +45,8 @@ import {
   formatTradeDateTime,
   groupItemsByTastyStrategy,
   getContractMultiplier,
+  calculateTradeCapitalRequirement,
+  isCashOrIraAccount,
   StrategyGroup
 } from './utils/tastyParser';
 import type {
@@ -640,15 +642,16 @@ export default function App() {
               
               const brokerReqCap = parseFloat(act.required_capital || act.cap_req || act['cap-req'] || act.margin_requirement || '0');
               const rawAmount = act.amount ? Math.abs(parseFloat(act.amount)) : price * units * multiplier;
-              let reqCapital = brokerReqCap > 0 ? brokerReqCap : (isNaN(rawAmount) || rawAmount === 0 ? price * units * multiplier : rawAmount);
-
-              if (isBuy === false && details.isOption && (!brokerReqCap || brokerReqCap <= 0)) {
-                const root = (details.rootSymbol || sym).toUpperCase();
-                if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
-                else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
-                else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
-                else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
-              }
+              const { reqCapital, peakCapital } = calculateTradeCapitalRequirement({
+                acc,
+                details,
+                price,
+                units,
+                multiplier,
+                brokerReqCap,
+                rawAmount,
+                isBuy
+              });
 
               // A trade is an active open position ONLY if it has an unexpired future expiration date
               const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
@@ -669,7 +672,7 @@ export default function App() {
                 closePrice: null,
                 closeDate: status === 'Closed' ? tradeDate : null,
                 requiredCapital: reqCapital,
-                peakCapital: reqCapital * 1.15,
+                peakCapital: peakCapital,
                 fees: details.fees || 0,
                 commission: details.commission || 0,
                 otherFees: details.otherFees || 0,
@@ -754,21 +757,16 @@ export default function App() {
                 '0'
               );
 
-              let reqCapital = brokerCapReq;
-              if (!reqCapital || reqCapital <= 0) {
-                if (units > 0) {
-                  reqCapital = Math.abs(units * avgPrice * multiplier);
-                } else if (details.isOption) {
-                  const root = (details.rootSymbol || sym).toUpperCase();
-                  if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
-                  else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
-                  else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
-                  else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
-                  else reqCapital = Math.max(Math.abs(units * avgPrice * multiplier * 3), Math.abs(units) * 500);
-                } else {
-                  reqCapital = totalValue;
-                }
-              }
+              const { reqCapital, peakCapital } = calculateTradeCapitalRequirement({
+                acc,
+                details,
+                price: avgPrice,
+                units,
+                multiplier,
+                brokerReqCap: brokerCapReq,
+                rawAmount: totalValue,
+                isBuy: units > 0
+              });
 
               return {
                 id: `${acc.id}-pos-${idx}`,
@@ -786,7 +784,7 @@ export default function App() {
                 createdDate: entryDate,
                 capReq: reqCapital,
                 requiredCapital: reqCapital,
-                peakCapital: reqCapital * 1.15
+                peakCapital: peakCapital
               };
             });
 
@@ -912,21 +910,16 @@ export default function App() {
                   '0'
                 );
 
-                let reqCapital = brokerCapReq;
-                if (!reqCapital || reqCapital <= 0) {
-                  if (units > 0) {
-                    reqCapital = Math.abs(units * avgPrice * multiplier);
-                  } else if (details.isOption) {
-                    const root = (details.rootSymbol || sym).toUpperCase();
-                    if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
-                    else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
-                    else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
-                    else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
-                    else reqCapital = Math.max(Math.abs(units * avgPrice * multiplier * 3), Math.abs(units) * 500);
-                  } else {
-                    reqCapital = totalValue;
-                  }
-                }
+                const { reqCapital, peakCapital } = calculateTradeCapitalRequirement({
+                  acc,
+                  details,
+                  price: avgPrice,
+                  units,
+                  multiplier,
+                  brokerReqCap: brokerCapReq,
+                  rawAmount: totalValue,
+                  isBuy: units > 0
+                });
 
                 return {
                   id: `tasty-${acc.number}-pos-${idx}`,
@@ -947,7 +940,7 @@ export default function App() {
                   createdDate: entryDate,
                   capReq: reqCapital,
                   requiredCapital: reqCapital,
-                  peakCapital: reqCapital * 1.15
+                  peakCapital: peakCapital
                 };
               });
 
@@ -974,15 +967,16 @@ export default function App() {
                 
                 const brokerReqCap = parseFloat(tx.required_capital || tx.cap_req || tx['cap-req'] || tx.margin_requirement || '0');
                 const rawAmount = tx.value ? Math.abs(parseFloat(tx.value)) : price * units * multiplier;
-                let reqCapital = brokerReqCap > 0 ? brokerReqCap : (isNaN(rawAmount) || rawAmount === 0 ? price * units * multiplier : rawAmount);
-
-                if (isBuy === false && details.isOption && (!brokerReqCap || brokerReqCap <= 0)) {
-                  const root = (details.rootSymbol || sym).toUpperCase();
-                  if (root.includes('MES')) reqCapital = Math.abs(units) * 900.55;
-                  else if (root.includes('MNQ')) reqCapital = Math.abs(units) * 580.19;
-                  else if (root.includes('ES')) reqCapital = Math.abs(units) * 9000.00;
-                  else if (root.includes('NQ')) reqCapital = Math.abs(units) * 11600.00;
-                }
+                const { reqCapital, peakCapital } = calculateTradeCapitalRequirement({
+                  acc,
+                  details,
+                  price,
+                  units,
+                  multiplier,
+                  brokerReqCap,
+                  rawAmount,
+                  isBuy
+                });
 
                 const isOpeningAction = details.action === 'BTO' || details.action === 'STO';
                 const hasValidFutureExpiry = details.daysLeft !== undefined && details.daysLeft >= 0 && !details.isExpired;
@@ -1002,7 +996,7 @@ export default function App() {
                   closePrice: null,
                   closeDate: status === 'Closed' ? tradeDate : null,
                   requiredCapital: reqCapital,
-                  peakCapital: reqCapital * 1.15,
+                  peakCapital: peakCapital,
                   fees: details.fees || 0,
                   commission: details.commission || 0,
                   otherFees: details.otherFees || 0,
@@ -1232,10 +1226,12 @@ export default function App() {
     const entryPrice = trade.price || 0;
     const quantity = trade.quantity || 1;
     const multiplier = trade.details?.multiplier || getContractMultiplier(trade.details?.rootSymbol, trade.details?.isOption, trade.details?.isFuture);
+    const tradeAcc = accounts?.find(a => a.id === trade.accountId);
+    const isIraOrCash = isCashOrIraAccount(tradeAcc);
     const reqCap = (trade.requiredCapital && trade.requiredCapital > 0) 
       ? trade.requiredCapital 
       : (entryPrice * quantity * multiplier) || 1;
-    const peakCap = (trade.peakCapital && trade.peakCapital > 0) ? trade.peakCapital : reqCap * 1.15;
+    const peakCap = (trade.peakCapital && trade.peakCapital > 0) ? trade.peakCapital : (isIraOrCash ? reqCap : reqCap * 1.15);
 
     let profit = 0;
     let daysHeld = 1;
@@ -1637,8 +1633,30 @@ export default function App() {
       }
     }
 
+    const firstItem = strategy.items[0];
+    const itemAccId = (firstItem as any)?.accountId;
+    const stratAcc = accounts?.find(a => a.id === itemAccId);
+    const isStratIraOrCash = isCashOrIraAccount(stratAcc);
+
+    // If strategy is a defined-risk vertical spread, cap required capital by spread width
+    if (strategy.strategyType === 'Vertical') {
+      const strikes = strategy.items
+        .map(i => i.details?.strike)
+        .filter((s): s is number => s !== undefined && !isNaN(s));
+      if (strikes.length >= 2) {
+        const width = Math.abs(Math.max(...strikes) - Math.min(...strikes));
+        const mult = strategy.items[0]?.details?.multiplier || 100;
+        const spreadMaxRisk = width * mult * (strategy.items[0]?.quantity || 1);
+        if (spreadMaxRisk > 0 && totalReqCap > spreadMaxRisk) {
+          totalReqCap = spreadMaxRisk;
+          totalPeakCap = spreadMaxRisk;
+          totalExitCap = spreadMaxRisk;
+        }
+      }
+    }
+
     if (totalReqCap <= 0) totalReqCap = Math.abs(strategy.netCostBasis) || 1;
-    if (totalPeakCap <= 0) totalPeakCap = totalReqCap * 1.15;
+    if (totalPeakCap <= 0) totalPeakCap = isStratIraOrCash ? totalReqCap : totalReqCap * 1.15;
     if (totalExitCap <= 0) totalExitCap = totalReqCap;
 
     const totalAvgCapital = Math.max(1, (totalReqCap + totalPeakCap + totalExitCap) / 3);
@@ -1667,7 +1685,7 @@ export default function App() {
       netCostBasis: strategy.netCostBasis,
       netCurrentPrice: strategy.netCurrentPrice
     };
-  }, [trades, calculateROI]);
+  }, [trades, accounts, calculateROI]);
 
   const strategyMetrics = useMemo(() => {
     return calculateStrategyMetrics(activeStrategy);

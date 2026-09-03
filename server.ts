@@ -1128,7 +1128,7 @@ async function startServer() {
     const redirectUri = (req.query.redirectUri as string) || tastytradeRedirectUri || defaultCallback;
 
     // Tastytrade OAuth Authorization URL (hosted at /auth.html)
-    const authUrl = `https://my.tastytrade.com/auth.html?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&state=${encodeURIComponent(uid)}`;
+    const authUrl = `https://my.tastytrade.com/auth.html?client_id=${encodeURIComponent(clientId)}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=read&state=${encodeURIComponent(uid)}`;
 
     console.log(`[Tastytrade OAuth] Generated OAuth URL for UID: ${uid} (Callback: ${redirectUri})`);
     res.json({

@@ -996,6 +996,21 @@ export function groupItemsByTastyStrategy<T extends {
         }
       }
 
+      // If strategy is a defined-risk vertical spread, cap required capital by spread width
+      if (stratInfo.strategyType === 'Vertical') {
+        const strikes = expItems
+          .map(i => i.details?.strike)
+          .filter((s): s is number => s !== undefined && !isNaN(s));
+        if (strikes.length >= 2) {
+          const width = Math.abs(Math.max(...strikes) - Math.min(...strikes));
+          const mult = expItems[0]?.details?.multiplier || 100;
+          const spreadMaxRisk = width * mult * (expItems[0]?.quantity || 1);
+          if (spreadMaxRisk > 0 && totalReqCap > spreadMaxRisk) {
+            totalReqCap = spreadMaxRisk;
+          }
+        }
+      }
+
       strategies.push({
         id: `${sym}-${expKey}-${stratInfo.strategyType}`,
         strategyName: stratInfo.strategyName,
@@ -1055,4 +1070,142 @@ export function groupItemsByTastyStrategy<T extends {
   });
 
   return underlyingGroups;
+}
+
+/**
+ * Detects whether an account is an IRA (Traditional, Roth, SEP, Simple, Rollover) or Cash account.
+ */
+export function isCashOrIraAccount(acc?: any): boolean {
+  if (!acc) return false;
+  const typeStr = `${acc.account_type || ''} ${acc.raw_type || ''} ${acc.meta?.type || ''} ${acc.name || ''} ${acc.type || ''}`.toUpperCase();
+  return (
+    typeStr.includes('IRA') ||
+    typeStr.includes('ROTH') ||
+    typeStr.includes('TRADITIONAL') ||
+    typeStr.includes('SEP') ||
+    typeStr.includes('SIMPLE') ||
+    typeStr.includes('ROLLOVER') ||
+    typeStr.includes('CASH') ||
+    typeStr.includes('401K') ||
+    typeStr.includes('RETIREMENT')
+  );
+}
+
+export interface TradeCapitalResult {
+  reqCapital: number;
+  peakCapital: number;
+  isCashSecured: boolean;
+}
+
+/**
+ * Calculates the required capital and peak capital exposure for a trade/position leg.
+ * Handles Cash-Secured Puts (CSPs) in IRA/Cash accounts, standard margin equity rules,
+ * futures options, and long premium trades.
+ */
+export function calculateTradeCapitalRequirement(params: {
+  acc?: any;
+  details?: ParsedOptionDetails;
+  price: number;
+  units: number;
+  multiplier?: number;
+  brokerReqCap?: number;
+  rawAmount?: number;
+  action?: string;
+  isBuy?: boolean;
+}): TradeCapitalResult {
+  const { acc, details, price, units, multiplier = 1, brokerReqCap = 0, rawAmount = 0 } = params;
+  const absUnits = Math.abs(units) || 1;
+  const isCashOrIra = isCashOrIraAccount(acc);
+
+  // 1. If the broker provided an explicit, non-zero capital / margin requirement, honor it!
+  if (brokerReqCap > 0) {
+    return {
+      reqCapital: brokerReqCap,
+      peakCapital: isCashOrIra ? brokerReqCap : brokerReqCap * 1.15,
+      isCashSecured: isCashOrIra
+    };
+  }
+
+  const sym = details?.fullSymbol || details?.rootSymbol || '';
+  const root = (details?.rootSymbol || sym).toUpperCase();
+  const isOpt = details?.isOption ?? false;
+  const isFut = details?.isFuture ?? false;
+  const action = details?.action || params.action || (params.isBuy ? 'BTO' : 'STO');
+  const isBuy = details?.actionType ? details.actionType === 'Buy' : (params.isBuy ?? (action === 'BTO' || action === 'BTC'));
+  const isShortOpening = action === 'STO' || (!isBuy && action !== 'BTC');
+  const strike = details?.strike;
+
+  // 2. Index Futures Options (/MES, /MNQ, /ES, /NQ)
+  if (isFut || root.startsWith('/')) {
+    if (!isBuy) {
+      if (root.includes('MES')) {
+        const req = absUnits * 900.55;
+        return { reqCapital: req, peakCapital: isCashOrIra ? req : req * 1.15, isCashSecured: false };
+      }
+      if (root.includes('MNQ')) {
+        const req = absUnits * 580.19;
+        return { reqCapital: req, peakCapital: isCashOrIra ? req : req * 1.15, isCashSecured: false };
+      }
+      if (root.includes('ES')) {
+        const req = absUnits * 9000.00;
+        return { reqCapital: req, peakCapital: isCashOrIra ? req : req * 1.15, isCashSecured: false };
+      }
+      if (root.includes('NQ')) {
+        const req = absUnits * 11600.00;
+        return { reqCapital: req, peakCapital: isCashOrIra ? req : req * 1.15, isCashSecured: false };
+      }
+    }
+  }
+
+  // 3. Equity / Stock Options
+  if (isOpt) {
+    // 3A. Short Put (Cash-Secured Put in IRA/Cash vs Margin Put)
+    if (details?.optionType === 'PUT' && (isShortOpening || action === 'ASSIGNED')) {
+      if (strike && strike > 0) {
+        if (isCashOrIra) {
+          // Cash-Secured Put: 100% full collateral = strike * multiplier * units
+          const req = strike * multiplier * absUnits;
+          return { reqCapital: req, peakCapital: req, isCashSecured: true };
+        } else {
+          // Margin naked put rule (FINRA Rule 4210 estimate)
+          const req = Math.max(strike * multiplier * absUnits * 0.20, 250 * absUnits);
+          return { reqCapital: req, peakCapital: req * 1.15, isCashSecured: false };
+        }
+      }
+    }
+
+    // 3B. Short Call
+    if (details?.optionType === 'CALL' && isShortOpening) {
+      if (strike && strike > 0) {
+        if (isCashOrIra) {
+          // In IRA, short calls are covered calls secured by 100 shares of underlying
+          const req = strike * multiplier * absUnits;
+          return { reqCapital: req, peakCapital: req, isCashSecured: true };
+        } else {
+          const req = Math.max(strike * multiplier * absUnits * 0.20, 250 * absUnits);
+          return { reqCapital: req, peakCapital: req * 1.15, isCashSecured: false };
+        }
+      }
+    }
+
+    // 3C. Long Options (BTO Call or Put): defined risk = premium paid
+    if (isBuy && (action === 'BTO' || !action)) {
+      const prem = rawAmount > 0 ? rawAmount : price * absUnits * multiplier;
+      return { reqCapital: prem > 0 ? prem : 1, peakCapital: prem > 0 ? prem : 1, isCashSecured: true };
+    }
+
+    // 3D. Closing leg (BTC on Put/Call)
+    if (action === 'BTC' && strike && strike > 0 && isCashOrIra) {
+      const debit = rawAmount > 0 ? rawAmount : price * absUnits * multiplier;
+      return { reqCapital: debit > 0 ? debit : 1, peakCapital: debit > 0 ? debit : 1, isCashSecured: true };
+    }
+  }
+
+  // 4. Default / Stock / Cash Amount
+  const fallback = rawAmount > 0 ? rawAmount : (price * absUnits * multiplier || 1);
+  return {
+    reqCapital: fallback,
+    peakCapital: isCashOrIra ? fallback : fallback * 1.15,
+    isCashSecured: isCashOrIra
+  };
 }
