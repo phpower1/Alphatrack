@@ -1,13 +1,15 @@
-# Use official Node.js LTS image
+# Use official Node.js LTS slim image
 FROM node:20-slim
 
 # Set working directory
 WORKDIR /app
 
-# Copy dependency definitions
+# Copy dependency definitions and local dataconnect packages required by npm ci
 COPY package*.json ./
+COPY src/dataconnect-admin-generated ./src/dataconnect-admin-generated
+COPY src/dataconnect-generated ./src/dataconnect-generated
 
-# Install dependencies (including tsx and build tools)
+# Install dependencies (cached unless package*.json or dataconnect schemas change)
 RUN npm ci
 
 # Copy project source files

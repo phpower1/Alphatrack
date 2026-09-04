@@ -1,0 +1,57 @@
+steps:
+  # 1. Pull previous latest image for remote layer caching (fails gracefully if image doesn't exist yet)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Pull Cache'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker pull us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:latest || true
+
+  # 2. Build Docker image with remote cache and multi-core engine
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build Image'
+    args:
+      - 'build'
+      - '--cache-from'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:latest'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:$COMMIT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:latest'
+      - '.'
+
+  # 3. Push the commit-tagged image
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push Commit Image'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:$COMMIT_SHA'
+
+  # 4. Push the latest tag for caching future builds
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push Latest Cache'
+    args:
+      - 'push'
+      - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:latest'
+
+  # 5. Deploy new revision to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
+    id: 'Deploy Cloud Run'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'services'
+      - 'update'
+      - 'alphatrack'
+      - '--image=us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:$COMMIT_SHA'
+      - '--region=us-central1'
+      - '--quiet'
+
+images:
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:$COMMIT_SHA'
+  - 'us-central1-docker.pkg.dev/$PROJECT_ID/cloud-run-source-deploy/phpower1-alphatrack/alphatrack:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY

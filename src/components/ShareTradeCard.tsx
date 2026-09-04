@@ -6,7 +6,7 @@
  * what data to show (dollar amounts vs percentages), pick a visual theme
  * and target platform, and export (download, clipboard, or native share).
  */
-import React, { useRef, useState, useCallback } from 'react';
+import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { toPng } from 'html-to-image';
 import {
   ArrowUpRight,
@@ -685,6 +685,10 @@ export function ShareTradeDialog({
   strategyMetrics,
 }: ShareTradeDialogProps) {
   const cardRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState<number>(0);
+  const [cardHeight, setCardHeight] = useState<number | null>(null);
+
   const [note, setNote] = useState('');
   const [theme, setTheme] = useState<CardTheme>('dark');
   const [platform, setPlatform] = useState<Platform>('twitter');
@@ -694,6 +698,44 @@ export function ShareTradeDialog({
   const [showCapital, setShowCapital] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [copied, setCopied] = useState(false);
+
+  // Measure container width for responsive scaling
+  useEffect(() => {
+    if (!open || !containerRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.width > 0) {
+          setContainerWidth(entry.contentRect.width);
+        }
+      }
+    });
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, [open]);
+
+  // Measure card height whenever card content changes
+  useEffect(() => {
+    if (!open || !cardRef.current) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.contentRect.height > 0) {
+          setCardHeight(entry.contentRect.height);
+        }
+      }
+    });
+    observer.observe(cardRef.current);
+    return () => observer.disconnect();
+  }, [open, trade, metrics, strategy, strategyMetrics, note, theme, platform, showDollars, showROI, showLegs, showCapital]);
+
+  const targetWidth = PLATFORMS[platform].width;
+  const padding = 24;
+  const effectiveContainerWidth = containerWidth > 0
+    ? containerWidth
+    : (typeof window !== 'undefined' ? Math.min(720, window.innerWidth - 48) : 720);
+  const availableWidth = Math.max(280, effectiveContainerWidth - padding);
+  const scale = Math.min(1, availableWidth / targetWidth);
+  const fallbackHeight = Math.round(targetWidth / PLATFORMS[platform].aspect);
+  const currentHeight = cardHeight ?? fallbackHeight;
 
   const generateImage = useCallback(async (): Promise<Blob | null> => {
     if (!cardRef.current) return null;
@@ -778,10 +820,10 @@ export function ShareTradeDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="bg-card border-border text-foreground max-w-[760px] max-h-[92vh] flex flex-col p-0 overflow-hidden"
+        className="bg-card border-border text-foreground w-full max-w-[calc(100vw-2rem)] sm:max-w-[760px] max-h-[92vh] flex flex-col p-0 gap-0 overflow-hidden shadow-2xl"
       >
-        <DialogHeader className="p-5 pb-0 shrink-0">
-          <DialogTitle className="text-foreground text-base font-bold flex items-center gap-2">
+        <DialogHeader className="p-4 sm:p-5 pb-3 sm:pb-4 pr-12 shrink-0 border-b border-border/40">
+          <DialogTitle className="text-foreground text-base sm:text-lg font-bold flex items-center gap-2">
             <Share2 className="w-5 h-5 text-brand" />
             <span>Share Trade Card</span>
           </DialogTitle>
@@ -790,9 +832,9 @@ export function ShareTradeDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto p-5 pt-4 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-5 custom-scrollbar space-y-4 sm:space-y-5">
           {/* ── Platform Selector ─────────────────────────── */}
-          <div className="mb-4">
+          <div>
             <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
               Platform
             </h4>
@@ -800,6 +842,7 @@ export function ShareTradeDialog({
               {(Object.entries(PLATFORMS) as [Platform, PlatformPreset][]).map(([key, val]) => (
                 <button
                   key={key}
+                  type="button"
                   onClick={() => setPlatform(key)}
                   className={cn(
                     'flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer',
@@ -816,30 +859,48 @@ export function ShareTradeDialog({
           </div>
 
           {/* ── Card Preview ──────────────────────────────── */}
-          <div className="flex justify-center mb-5 overflow-x-auto">
+          <div
+            ref={containerRef}
+            className="w-full flex justify-center items-center p-3 sm:p-4 rounded-2xl bg-surface-1/60 border border-border/40 overflow-hidden min-h-[160px]"
+          >
             <div
-              ref={cardRef}
-              className="inline-block"
-              style={{ transform: PLATFORMS[platform].width > 580 ? 'scale(0.88)' : 'scale(0.95)', transformOrigin: 'top center' }}
+              style={{
+                width: `${Math.round(targetWidth * scale)}px`,
+                height: `${Math.round(currentHeight * scale)}px`,
+                position: 'relative',
+                overflow: 'hidden',
+                borderRadius: '16px',
+                boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.4), 0 8px 10px -6px rgba(0, 0, 0, 0.3)',
+              }}
             >
-              <ShareableCard
-                trade={trade}
-                metrics={metrics}
-                strategy={strategy}
-                strategyMetrics={strategyMetrics}
-                note={note}
-                theme={theme}
-                platform={platform}
-                showDollars={showDollars}
-                showROI={showROI}
-                showLegs={showLegs}
-                showCapital={showCapital}
-              />
+              <div
+                style={{
+                  width: `${targetWidth}px`,
+                  transform: `scale(${scale})`,
+                  transformOrigin: 'top left',
+                }}
+              >
+                <div ref={cardRef} style={{ width: `${targetWidth}px` }}>
+                  <ShareableCard
+                    trade={trade}
+                    metrics={metrics}
+                    strategy={strategy}
+                    strategyMetrics={strategyMetrics}
+                    note={note}
+                    theme={theme}
+                    platform={platform}
+                    showDollars={showDollars}
+                    showROI={showROI}
+                    showLegs={showLegs}
+                    showCapital={showCapital}
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
           {/* ── User Note ──────────────────────────────────── */}
-          <div className="mb-5">
+          <div>
             <label
               htmlFor="share-note"
               className="block text-xs font-semibold text-muted-foreground mb-1.5"
@@ -861,9 +922,9 @@ export function ShareTradeDialog({
           </div>
 
           {/* ── Controls ───────────────────────────────────── */}
-          <div className="grid grid-cols-2 gap-4 mb-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Toggles */}
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               <h4 className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-2">
                 Show / Hide
               </h4>
@@ -876,7 +937,7 @@ export function ShareTradeDialog({
                   : []),
               ].map((toggle) => (
                 <div key={toggle.id} className="flex items-center justify-between">
-                  <label htmlFor={`toggle-${toggle.id}`} className="text-xs text-foreground cursor-pointer">
+                  <label htmlFor={`toggle-${toggle.id}`} className="text-xs text-foreground cursor-pointer select-none">
                     {toggle.label}
                   </label>
                   <Switch
@@ -898,6 +959,7 @@ export function ShareTradeDialog({
                   ([key, val]) => (
                     <button
                       key={key}
+                      type="button"
                       onClick={() => setTheme(key)}
                       className={cn(
                         'w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer',
@@ -922,46 +984,44 @@ export function ShareTradeDialog({
         </div>
 
         {/* ── Export Actions ──────────────────────────────── */}
-        <div className="p-5 pt-0 flex items-center gap-2 shrink-0 border-t border-border/60">
-          <div className="pt-3 flex items-center gap-2 w-full">
+        <div className="p-4 sm:p-5 flex flex-wrap sm:flex-nowrap items-center gap-2 sm:gap-3 shrink-0 border-t border-border/60 bg-card">
+          <Button
+            onClick={handleDownload}
+            disabled={exporting}
+            className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold px-4 cursor-pointer flex-1 min-w-[130px] h-9.5"
+          >
+            <Download className="size-3.5 mr-1.5" />
+            Download PNG
+          </Button>
+          <Button
+            onClick={handleCopy}
+            disabled={exporting}
+            variant="outline"
+            className="border-border text-muted-foreground hover:text-foreground text-xs cursor-pointer flex-1 min-w-[130px] h-9.5"
+          >
+            {copied ? (
+              <>
+                <Check className="size-3.5 mr-1.5 text-profit" />
+                Copied!
+              </>
+            ) : (
+              <>
+                <ClipboardCopy className="size-3.5 mr-1.5" />
+                Copy to Clipboard
+              </>
+            )}
+          </Button>
+          {canShare && (
             <Button
-              onClick={handleDownload}
-              disabled={exporting}
-              className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold px-4 cursor-pointer flex-1"
-            >
-              <Download className="size-3.5 mr-1.5" />
-              Download PNG
-            </Button>
-            <Button
-              onClick={handleCopy}
+              onClick={handleShare}
               disabled={exporting}
               variant="outline"
-              className="border-border text-muted-foreground text-xs cursor-pointer flex-1"
+              className="border-border text-muted-foreground hover:text-foreground text-xs cursor-pointer shrink-0 h-9.5 px-3.5"
             >
-              {copied ? (
-                <>
-                  <Check className="size-3.5 mr-1.5 text-profit" />
-                  Copied!
-                </>
-              ) : (
-                <>
-                  <ClipboardCopy className="size-3.5 mr-1.5" />
-                  Copy to Clipboard
-                </>
-              )}
+              <Share2 className="size-3.5 mr-1.5" />
+              Share
             </Button>
-            {canShare && (
-              <Button
-                onClick={handleShare}
-                disabled={exporting}
-                variant="outline"
-                className="border-border text-muted-foreground text-xs cursor-pointer"
-              >
-                <Share2 className="size-3.5 mr-1.5" />
-                Share
-              </Button>
-            )}
-          </div>
+          )}
         </div>
       </DialogContent>
     </Dialog>
