@@ -79,8 +79,10 @@ export function buildTradeColumns(
       header: mode === 'strategy' ? 'Symbol / Strategy / Legs' : 'Symbol',
       width: mode === 'strategy' ? '280px' : '260px',
       sticky: true,
-      sortable: mode === 'flat',
+      sortable: true,
       sortValue: (trade) => trade.details?.rootSymbol || trade.symbol,
+      sortStrategy: (group) => group.strategyName,
+      sortUnderlying: (group) => group.symbol,
       cell: (trade) =>
         mode === 'strategy' ? (
           trade.details ? (
@@ -125,6 +127,8 @@ export function buildTradeColumns(
       hideBelow: 'md',
       sortable: true,
       sortValue: (trade) => trade.brokerName,
+      sortStrategy: (group) => group.items[0]?.brokerName ?? '',
+      sortUnderlying: (group) => group.strategies[0]?.items[0]?.brokerName ?? '',
       cell: (trade) =>
         mode === 'flat' ? (
           <span className="rounded bg-surface-3 px-2 py-0.5 text-[11px] font-medium text-muted-foreground ring-1 ring-border">
@@ -145,6 +149,10 @@ export function buildTradeColumns(
       id: 'type',
       header: mode === 'strategy' ? 'Qty / Type' : 'Type',
       width: '130px',
+      sortable: true,
+      sortValue: (trade) => trade.quantity,
+      sortStrategy: (group) => group.items.length,
+      sortUnderlying: (group) => group.strategies.reduce((acc, s) => acc + s.items.length, 0),
       cell: (trade) => (
         <div className="flex flex-wrap items-center gap-1.5">
           <ActionBadge action={trade.details?.action || trade.type} />
@@ -172,7 +180,36 @@ export function buildTradeColumns(
       width: '150px',
       hideBelow: 'lg',
       sortable: true,
-      sortValue: (trade) => new Date(trade.date).getTime(),
+      sortValue: (trade) => {
+        const t = trade.date ? new Date(trade.date).getTime() : NaN;
+        return Number.isNaN(t) ? null : t;
+      },
+      sortStrategy: (group) => {
+        if (group.expirationDate) {
+          const t = new Date(group.expirationDate).getTime();
+          if (!Number.isNaN(t)) return t;
+        }
+        const timestamps = group.items
+          .map((i) => (i.date ? new Date(i.date).getTime() : NaN))
+          .filter((t) => !Number.isNaN(t));
+        return timestamps.length > 0 ? Math.max(...timestamps) : null;
+      },
+      sortUnderlying: (group, direction) => {
+        const timestamps = group.strategies
+          .map((s) => {
+            if (s.expirationDate) {
+              const t = new Date(s.expirationDate).getTime();
+              if (!Number.isNaN(t)) return t;
+            }
+            const ts = s.items
+              .map((i) => (i.date ? new Date(i.date).getTime() : NaN))
+              .filter((t) => !Number.isNaN(t));
+            return ts.length > 0 ? Math.max(...ts) : null;
+          })
+          .filter((t): t is number => t !== null);
+        if (timestamps.length === 0) return null;
+        return direction === 'asc' ? Math.min(...timestamps) : Math.max(...timestamps);
+      },
       cell: (trade) => (
         <span className="text-[11px] text-muted-foreground">{formatTradeDateTime(trade.date)}</span>
       ),
@@ -191,6 +228,11 @@ export function buildTradeColumns(
       width: '130px',
       sortable: true,
       sortValue: (trade) => calculateROI(trade)?.profit ?? null,
+      sortStrategy: (group) => {
+        const metrics = calculateStrategyMetrics(group);
+        return metrics ? metrics.netProfit : group.totalRealizedProfit;
+      },
+      sortUnderlying: (group) => group.totalRealizedProfit,
       cell: (trade) => {
         const metrics = calculateROI(trade);
         if (!metrics) return <Dash />;
@@ -231,6 +273,16 @@ export function buildTradeColumns(
       hideBelow: 'md',
       sortable: true,
       sortValue: (trade) => calculateROI(trade)?.avgROI ?? null,
+      sortStrategy: (group) => calculateStrategyMetrics(group)?.avgROI ?? null,
+      sortUnderlying: (group, direction) => {
+        const rois = group.strategies
+          .map((s) => calculateStrategyMetrics(s)?.avgROI)
+          .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        if (rois.length > 0) return direction === 'asc' ? Math.min(...rois) : Math.max(...rois);
+        return group.totalRequiredCapital > 0
+          ? (group.totalRealizedProfit / group.totalRequiredCapital) * 100
+          : null;
+      },
       cell: (trade) => {
         const metrics = calculateROI(trade);
         return metrics ? <Percent value={metrics.avgROI} signed colored /> : <Dash />;
@@ -250,6 +302,14 @@ export function buildTradeColumns(
       hideBelow: 'lg',
       sortable: true,
       sortValue: (trade) => calculateROI(trade)?.peakROI ?? null,
+      sortStrategy: (group) => calculateStrategyMetrics(group)?.peakROI ?? null,
+      sortUnderlying: (group, direction) => {
+        const rois = group.strategies
+          .map((s) => calculateStrategyMetrics(s)?.peakROI)
+          .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        if (rois.length === 0) return null;
+        return direction === 'asc' ? Math.min(...rois) : Math.max(...rois);
+      },
       cell: (trade) => {
         const metrics = calculateROI(trade);
         return metrics ? <Percent value={metrics.peakROI} signed colored /> : <Dash />;
@@ -269,6 +329,14 @@ export function buildTradeColumns(
       hideBelow: 'xl',
       sortable: true,
       sortValue: (trade) => calculateROI(trade)?.annualizedROI ?? null,
+      sortStrategy: (group) => calculateStrategyMetrics(group)?.annualizedROI ?? null,
+      sortUnderlying: (group, direction) => {
+        const rois = group.strategies
+          .map((s) => calculateStrategyMetrics(s)?.annualizedROI)
+          .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        if (rois.length === 0) return null;
+        return direction === 'asc' ? Math.min(...rois) : Math.max(...rois);
+      },
       cell: (trade) => {
         const metrics = calculateROI(trade);
         return metrics ? (

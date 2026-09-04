@@ -1890,7 +1890,7 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col font-sans bg-background text-foreground antialiased selection:bg-brand selection:text-foreground lg:h-screen lg:overflow-hidden">
+    <div className="min-h-screen flex flex-col font-sans bg-background text-foreground antialiased selection:bg-brand selection:text-foreground">
       <AppHeader
         user={user}
         accounts={accounts}
@@ -2030,7 +2030,7 @@ export default function App() {
           )}
         </main>
       ) : (
-        <main className="flex-1 flex flex-col p-4 lg:p-6 max-w-[1700px] w-full mx-auto gap-4 lg:gap-6 lg:min-h-0 lg:overflow-hidden">
+        <main className="flex-1 flex flex-col p-4 lg:p-6 max-w-[1700px] w-full mx-auto gap-4 lg:gap-6">
           {/*
             Metric strip. Each card is a stat tile; its visualisation matches
             its own label. Net Liq and Cash get meters rather than sparklines
@@ -2128,9 +2128,9 @@ export default function App() {
           </div>
 
           {/* Main Grid: Data Table + Trade Inspector Sidebar */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_400px] gap-4 lg:gap-6 lg:flex-1 lg:min-h-0 lg:overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_400px] gap-4 lg:gap-6 items-stretch">
             {/* Left Content Table */}
-            <div className="bg-card ring-1 ring-border rounded-2xl flex flex-col overflow-hidden lg:min-h-0 lg:h-full">
+            <div className="bg-card ring-1 ring-border rounded-2xl flex flex-col overflow-hidden h-full min-h-[600px]">
               <TableToolbar
                 activeTab={activeTab}
                 onTabChange={setActiveTab}
@@ -2218,9 +2218,9 @@ export default function App() {
             </div>
 
             {/* Right Sidebar: Detailed Trade Inspector */}
-            <aside className="flex flex-col lg:min-h-0 lg:h-full lg:overflow-hidden">
-              <div className="bg-card ring-1 ring-border rounded-2xl p-6 flex flex-col lg:flex-1 lg:min-h-0 lg:overflow-y-auto custom-scrollbar">
-                <div>
+            <aside className="flex flex-col h-full">
+              <div className="bg-card ring-1 ring-border rounded-2xl p-6 flex flex-col h-full min-h-[600px]">
+                <div className="flex flex-col flex-1">
                   <div className="flex items-center justify-between pb-3 border-b border-border/80 mb-5">
                     <span className="text-sm font-bold text-foreground">Trade & Strategy Inspector</span>
                   </div>
@@ -2605,7 +2605,7 @@ export default function App() {
                       </div>
                     </>
                   ) : (
-                    <div className="p-8 text-center text-subtle-foreground text-xs">
+                    <div className="flex-1 flex items-center justify-center p-8 text-center text-subtle-foreground text-xs">
                       Select a trade from the table to view capital-adjusted metrics.
                     </div>
                   )}

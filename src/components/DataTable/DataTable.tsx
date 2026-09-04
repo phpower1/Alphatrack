@@ -42,6 +42,9 @@ export function DataTable<Row extends { id: string }>({
 
   const isGrouped = Array.isArray(groups);
 
+  const isNullish = (v: unknown) =>
+    v === null || v === undefined || (typeof v === 'number' && Number.isNaN(v)) || v === '';
+
   const sortedRows = useMemo(() => {
     if (isGrouped || !rows) return rows ?? [];
     if (!sort) return rows;
@@ -55,8 +58,8 @@ export function DataTable<Row extends { id: string }>({
       const bv = column.sortValue!(b);
 
       // Nullish always sorts last, regardless of direction.
-      const aNull = av === null || av === undefined;
-      const bNull = bv === null || bv === undefined;
+      const aNull = isNullish(av);
+      const bNull = isNullish(bv);
       if (aNull && bNull) return 0;
       if (aNull) return 1;
       if (bNull) return -1;
@@ -64,10 +67,98 @@ export function DataTable<Row extends { id: string }>({
       if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * factor;
       return String(av).localeCompare(String(bv)) * factor;
     });
-  }, [rows, groups, isGrouped, sort, columns]);
+  }, [rows, isGrouped, sort, columns]);
+
+  const sortedGroups = useMemo(() => {
+    if (!isGrouped || !groups) return groups ?? [];
+    if (!sort) return groups;
+
+    const column = columns.find((c) => c.id === sort.columnId);
+    if (!column) return groups;
+
+    const factor = sort.direction === 'asc' ? 1 : -1;
+
+    const compareValues = (av: unknown, bv: unknown) => {
+      const aNull = isNullish(av);
+      const bNull = isNullish(bv);
+      if (aNull && bNull) return 0;
+      if (aNull) return 1;
+      if (bNull) return -1;
+
+      if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * factor;
+      return String(av).localeCompare(String(bv)) * factor;
+    };
+
+    const getStrategyVal = (strat: StrategyGroup<Row>) => {
+      if (column.sortStrategy) return column.sortStrategy(strat, sort.direction);
+      if (column.sortValue && strat.items.length > 0) {
+        const itemVals = strat.items.map(column.sortValue).filter((v) => !isNullish(v));
+        if (itemVals.length > 0) {
+          if (typeof itemVals[0] === 'number') {
+            const nums = itemVals as number[];
+            return sort.direction === 'asc' ? Math.min(...nums) : Math.max(...nums);
+          }
+          return itemVals[0];
+        }
+      }
+      return null;
+    };
+
+    const getUnderlyingVal = (uGroup: UnderlyingGroup<Row>) => {
+      if (column.sortUnderlying) return column.sortUnderlying(uGroup, sort.direction);
+      if (uGroup.strategies.length > 0) {
+        const stratVals = uGroup.strategies.map(getStrategyVal).filter((v) => !isNullish(v));
+        if (stratVals.length > 0) {
+          if (typeof stratVals[0] === 'number') {
+            const nums = stratVals as number[];
+            return sort.direction === 'asc' ? Math.min(...nums) : Math.max(...nums);
+          }
+          return stratVals[0];
+        }
+      }
+      return null;
+    };
+
+    const sorted = groups.map((uGroup) => {
+      const sortedStrategies = uGroup.strategies.map((strat) => {
+        let sortedItems = strat.items;
+        if (column.sortValue) {
+          sortedItems = [...strat.items].sort((a, b) => {
+            const av = column.sortValue!(a);
+            const bv = column.sortValue!(b);
+            return compareValues(av, bv);
+          });
+        }
+        return {
+          ...strat,
+          items: sortedItems,
+        };
+      });
+
+      sortedStrategies.sort((a, b) => {
+        const av = getStrategyVal(a);
+        const bv = getStrategyVal(b);
+        return compareValues(av, bv);
+      });
+
+      return {
+        ...uGroup,
+        strategies: sortedStrategies,
+      };
+    });
+
+    sorted.sort((a, b) => {
+      const av = getUnderlyingVal(a);
+      const bv = getUnderlyingVal(b);
+      return compareValues(av, bv);
+    });
+
+    return sorted;
+  }, [groups, isGrouped, sort, columns]);
 
   const toggleSort = (column: ColumnDef<Row>) => {
-    if (!column.sortable || !column.sortValue) return;
+    if (!column.sortable) return;
+    if (!column.sortValue && !column.sortUnderlying && !column.sortStrategy) return;
     setSort((prev) => {
       if (prev?.columnId !== column.id) return { columnId: column.id, direction: 'desc' };
       if (prev.direction === 'desc') return { columnId: column.id, direction: 'asc' };
@@ -76,7 +167,7 @@ export function DataTable<Row extends { id: string }>({
   };
 
   const colCount = columns.length;
-  const hasContent = isGrouped ? (groups?.length ?? 0) > 0 : sortedRows.length > 0;
+  const hasContent = isGrouped ? (sortedGroups?.length ?? 0) > 0 : sortedRows.length > 0;
 
   return (
     <div className={cn('relative w-full overflow-auto custom-scrollbar', className)}>
@@ -93,7 +184,9 @@ export function DataTable<Row extends { id: string }>({
           <tr>
             {columns.map((column) => {
               const isSorted = sort?.columnId === column.id;
-              const canSort = Boolean(column.sortable && column.sortValue);
+              const canSort = Boolean(
+                column.sortable && (column.sortValue || column.sortUnderlying || column.sortStrategy)
+              );
 
               return (
                 <th
@@ -172,7 +265,7 @@ export function DataTable<Row extends { id: string }>({
               </td>
             </tr>
           ) : isGrouped ? (
-            groups!.map((uGroup) => (
+            sortedGroups.map((uGroup) => (
               <UnderlyingRows
                 key={uGroup.key}
                 uGroup={uGroup}

@@ -35,8 +35,10 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       header: mode === 'strategy' ? 'Symbol / Strategy / Contract' : 'Symbol / Contract',
       width: '280px',
       sticky: true,
-      sortable: mode === 'flat',
+      sortable: true,
       sortValue: (position) => position.details?.rootSymbol || position.symbol,
+      sortStrategy: (group) => group.strategyName,
+      sortUnderlying: (group) => group.symbol,
       cell: (position) =>
         position.details ? (
           <ContractPill details={position.details} quantity={position.quantity} />
@@ -77,6 +79,8 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       hideBelow: 'md',
       sortable: true,
       sortValue: (position) => position.brokerName,
+      sortStrategy: (group) => group.items[0]?.brokerName ?? '',
+      sortUnderlying: (group) => group.strategies[0]?.items[0]?.brokerName ?? '',
       cell: (position) => (
         <span className="text-[11px] text-muted-foreground">{position.brokerName}</span>
       ),
@@ -95,6 +99,8 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       width: '90px',
       sortable: true,
       sortValue: (position) => position.quantity,
+      sortStrategy: (group) => group.totalQuantity,
+      sortUnderlying: (group) => group.strategies.reduce((acc, s) => acc + s.totalQuantity, 0),
       cell: (position) => <SignedQty quantity={position.quantity} />,
       underlyingCell: () => <Dash />,
       strategyCell: (group) => <SignedQty quantity={group.totalQuantity} />,
@@ -106,7 +112,15 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       width: '140px',
       hideBelow: 'lg',
       sortable: true,
-      sortValue: (position) => position.details?.daysLeft ?? null,
+      sortValue: (position) => position.details?.daysLeft ?? position.details?.dte ?? null,
+      sortStrategy: (group) => group.daysLeft ?? group.dte ?? null,
+      sortUnderlying: (group, direction) => {
+        const days = group.strategies
+          .map((s) => s.daysLeft ?? s.dte)
+          .filter((v): v is number => typeof v === 'number' && !Number.isNaN(v));
+        if (days.length === 0) return null;
+        return direction === 'asc' ? Math.min(...days) : Math.max(...days);
+      },
       cell: (position) =>
         position.details?.daysLeftFormatted ? (
           <DaysLeftChip label={position.details.daysLeftFormatted} />
@@ -131,6 +145,8 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       hideBelow: 'md',
       sortable: true,
       sortValue: (position) => position.averagePrice,
+      sortStrategy: (group) => Math.abs(group.netCostBasis),
+      sortUnderlying: (group) => Math.abs(group.strategies.reduce((acc, s) => acc + s.netCostBasis, 0)),
       cell: (position) => (
         <Money value={position.averagePrice || 0} className="text-muted-foreground" />
       ),
@@ -148,6 +164,8 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       hideBelow: 'lg',
       sortable: true,
       sortValue: (position) => position.currentPrice,
+      sortStrategy: (group) => Math.abs(group.netCurrentPrice),
+      sortUnderlying: (group) => group.totalValue,
       cell: (position) => <Money value={position.currentPrice || 0} />,
       underlyingCell: () => <Dash />,
       strategyCell: (group) => (
@@ -162,6 +180,8 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       width: '120px',
       sortable: true,
       sortValue: (position) => position.totalValue,
+      sortStrategy: (group) => group.totalValue,
+      sortUnderlying: (group) => group.totalValue,
       cell: (position) => <Money value={position.totalValue || 0} />,
       underlyingCell: (group) => <Money value={group.totalValue} className="font-bold" />,
       strategyCell: (group) => <Money value={group.totalValue} className="font-bold" />,
@@ -174,6 +194,8 @@ export function buildPositionColumns(mode: 'strategy' | 'flat'): ColumnDef<Posit
       width: '120px',
       sortable: true,
       sortValue: (position) => position.openPnl,
+      sortStrategy: (group) => group.totalOpenPnl,
+      sortUnderlying: (group) => group.totalOpenPnl,
       cell: (position) => <PnL value={position.openPnl || 0} />,
       underlyingCell: (group) => <PnL value={group.totalOpenPnl} size="sm" />,
       strategyCell: (group) => <PnL value={group.totalOpenPnl} />,

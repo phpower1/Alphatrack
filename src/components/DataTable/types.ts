@@ -27,6 +27,10 @@ export interface ColumnDef<Row> {
   sortable?: boolean;
   /** Value used for ordering. Return null/undefined to sort last. */
   sortValue?: (row: Row) => number | string | null | undefined;
+  /** Value used for ordering strategy groups in grouped view. Return null/undefined to sort last. */
+  sortStrategy?: (group: StrategyGroup<Row>, direction: SortDirection) => number | string | null | undefined;
+  /** Value used for ordering underlying groups in grouped view. Return null/undefined to sort last. */
+  sortUnderlying?: (group: UnderlyingGroup<Row>, direction: SortDirection) => number | string | null | undefined;
 
   /** Leaf row renderer. */
   cell: (row: Row) => ReactNode;
