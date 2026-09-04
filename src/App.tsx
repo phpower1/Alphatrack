@@ -14,6 +14,7 @@ import {
   PlusCircle,
   RefreshCw,
   Settings,
+  Share2,
   ShieldCheck,
   Trash2,
   TrendingUp,
@@ -72,6 +73,7 @@ import { Spinner } from './components/Spinner';
 import { formatMoney } from './lib/format';
 import { Sparkline } from './components/viz/Sparkline';
 import { SplitMeter, WinLossBar } from './components/viz/SplitMeter';
+import { ShareTradeDialog } from './components/ShareTradeCard';
 
 // Local / Firestore persistence helpers for Tastytrade session
 const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
@@ -228,6 +230,7 @@ export default function App() {
 
   const [inspectorMode, setInspectorMode] = useState<'strategy' | 'leg'>('strategy');
   const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
 
   // User Configuration Menu Dropdown State
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -2130,99 +2133,111 @@ export default function App() {
           {/* Main Grid: Data Table + Trade Inspector Sidebar */}
           <div className="grid grid-cols-1 lg:grid-cols-[1fr_380px] xl:grid-cols-[1fr_400px] gap-4 lg:gap-6 items-stretch">
             {/* Left Content Table */}
-            <div className="bg-card ring-1 ring-border rounded-2xl flex flex-col overflow-hidden h-full min-h-[600px]">
-              <TableToolbar
-                activeTab={activeTab}
-                onTabChange={setActiveTab}
-                tradesCount={filteredTrades.length}
-                positionsCount={filteredPositions.length}
-                groupBy={groupBy}
-                onGroupByChange={setGroupBy}
-                search={searchFilter}
-                onSearchChange={setSearchFilter}
-                period={periodFilter}
-                onPeriodChange={setPeriodFilter}
-              />
+            <div className="relative w-full h-full min-w-0">
+              <div className="bg-card ring-1 ring-border rounded-2xl flex flex-col overflow-hidden h-[600px] lg:h-auto lg:absolute lg:inset-0">
+                <TableToolbar
+                  activeTab={activeTab}
+                  onTabChange={setActiveTab}
+                  tradesCount={filteredTrades.length}
+                  positionsCount={filteredPositions.length}
+                  groupBy={groupBy}
+                  onGroupByChange={setGroupBy}
+                  search={searchFilter}
+                  onSearchChange={setSearchFilter}
+                  period={periodFilter}
+                  onPeriodChange={setPeriodFilter}
+                />
 
-              {/*
-                One shared DataTable serves all four view combinations
-                (trades/positions x grouped/flat). These were previously four
-                hand-written table blocks totalling ~690 lines, with the same
-                header markup repeated 32 times.
-              */}
-              {activeTab === 'trades' ? (
-                <DataTable<Trade>
-                  caption={
-                    groupBy === 'strategy'
-                      ? 'Trades and ROI history, grouped by underlying and strategy'
-                      : 'Trades and ROI history'
-                  }
-                  columns={tradeColumns}
-                  rows={groupBy === 'flat' ? filteredTrades : undefined}
-                  groups={groupBy === 'strategy' ? groupedTrades : undefined}
-                  collapse={collapseState}
-                  selectedId={activeTradeId}
-                  onSelect={handleSelectRow}
-                  loading={loading}
-                  className="min-h-0 flex-1"
-                  empty={
-                    <EmptyState
-                      variant={isFiltered ? 'no-results' : 'no-data'}
-                      title={isFiltered ? 'No trades match your search' : 'No trades synced yet'}
-                      body={
-                        isFiltered
-                          ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
-                          : 'Once a brokerage is linked and synced, your transaction history appears here.'
-                      }
-                      action={
-                        isFiltered
-                          ? { label: 'Clear search', onClick: () => setSearchFilter('') }
-                          : { label: 'Sync portfolio', onClick: handleRefresh }
-                      }
-                    />
-                  }
-                />
-              ) : (
-                <DataTable<Position>
-                  caption={
-                    groupBy === 'strategy'
-                      ? 'Open positions, grouped by underlying and strategy'
-                      : 'Open positions'
-                  }
-                  columns={positionColumns}
-                  rows={groupBy === 'flat' ? filteredPositions : undefined}
-                  groups={groupBy === 'strategy' ? groupedPositions : undefined}
-                  collapse={collapseState}
-                  selectedId={activeTradeId}
-                  onSelect={handleSelectRow}
-                  loading={loading}
-                  className="min-h-0 flex-1"
-                  empty={
-                    <EmptyState
-                      variant={isFiltered ? 'no-results' : 'no-data'}
-                      title={isFiltered ? 'No positions match your search' : 'No open positions'}
-                      body={
-                        isFiltered
-                          ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
-                          : 'Open positions reported by your linked brokerages will appear here.'
-                      }
-                      action={
-                        isFiltered
-                          ? { label: 'Clear search', onClick: () => setSearchFilter('') }
-                          : { label: 'Sync portfolio', onClick: handleRefresh }
-                      }
-                    />
-                  }
-                />
-              )}
+                {/*
+                  One shared DataTable serves all four view combinations
+                  (trades/positions x grouped/flat). These were previously four
+                  hand-written table blocks totalling ~690 lines, with the same
+                  header markup repeated 32 times.
+                */}
+                {activeTab === 'trades' ? (
+                  <DataTable<Trade>
+                    caption={
+                      groupBy === 'strategy'
+                        ? 'Trades and ROI history, grouped by underlying and strategy'
+                        : 'Trades and ROI history'
+                    }
+                    columns={tradeColumns}
+                    rows={groupBy === 'flat' ? filteredTrades : undefined}
+                    groups={groupBy === 'strategy' ? groupedTrades : undefined}
+                    collapse={collapseState}
+                    selectedId={activeTradeId}
+                    onSelect={handleSelectRow}
+                    loading={loading}
+                    className="min-h-0 flex-1"
+                    empty={
+                      <EmptyState
+                        variant={isFiltered ? 'no-results' : 'no-data'}
+                        title={isFiltered ? 'No trades match your search' : 'No trades synced yet'}
+                        body={
+                          isFiltered
+                            ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
+                            : 'Once a brokerage is linked and synced, your transaction history appears here.'
+                        }
+                        action={
+                          isFiltered
+                            ? { label: 'Clear search', onClick: () => setSearchFilter('') }
+                            : { label: 'Sync portfolio', onClick: handleRefresh }
+                        }
+                      />
+                    }
+                  />
+                ) : (
+                  <DataTable<Position>
+                    caption={
+                      groupBy === 'strategy'
+                        ? 'Open positions, grouped by underlying and strategy'
+                        : 'Open positions'
+                    }
+                    columns={positionColumns}
+                    rows={groupBy === 'flat' ? filteredPositions : undefined}
+                    groups={groupBy === 'strategy' ? groupedPositions : undefined}
+                    collapse={collapseState}
+                    selectedId={activeTradeId}
+                    onSelect={handleSelectRow}
+                    loading={loading}
+                    className="min-h-0 flex-1"
+                    empty={
+                      <EmptyState
+                        variant={isFiltered ? 'no-results' : 'no-data'}
+                        title={isFiltered ? 'No positions match your search' : 'No open positions'}
+                        body={
+                          isFiltered
+                            ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
+                            : 'Open positions reported by your linked brokerages will appear here.'
+                        }
+                        action={
+                          isFiltered
+                            ? { label: 'Clear search', onClick: () => setSearchFilter('') }
+                            : { label: 'Sync portfolio', onClick: handleRefresh }
+                        }
+                      />
+                    }
+                  />
+                )}
+              </div>
             </div>
 
             {/* Right Sidebar: Detailed Trade Inspector */}
-            <aside className="flex flex-col h-full">
-              <div className="bg-card ring-1 ring-border rounded-2xl p-6 flex flex-col h-full min-h-[600px]">
+            <aside className="flex flex-col w-full">
+              <div className="bg-card ring-1 ring-border rounded-2xl p-6 flex flex-col min-h-[550px]">
                 <div className="flex flex-col flex-1">
                   <div className="flex items-center justify-between pb-3 border-b border-border/80 mb-5">
                     <span className="text-sm font-bold text-foreground">Trade & Strategy Inspector</span>
+                    {activeTrade && activeMetrics && (
+                      <button
+                        onClick={() => setShareDialogOpen(true)}
+                        className="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground hover:text-brand bg-surface-2 hover:bg-brand-fill/15 border border-border hover:border-brand/40 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+                        title="Share trade card"
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                        <span>Share</span>
+                      </button>
+                    )}
                   </div>
 
                   {activeTrade && activeMetrics ? (
@@ -3136,6 +3151,16 @@ export default function App() {
           )}
         </DialogContent>
       </Dialog>
+
+      {/* Share Trade Card Dialog */}
+      <ShareTradeDialog
+        open={shareDialogOpen}
+        onOpenChange={setShareDialogOpen}
+        trade={activeTrade}
+        metrics={activeMetrics}
+        strategy={activeStrategy}
+        strategyMetrics={strategyMetrics}
+      />
     </div>
   );
 }
