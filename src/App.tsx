@@ -1634,7 +1634,9 @@ export default function App() {
             stratDaysHeld = spanExp;
           }
         } catch {}
-      } else if (strategy.dte !== undefined && strategy.daysLeft !== undefined) {
+      } else if (hasOpenLeg && strategy.dte !== undefined && strategy.daysLeft !== undefined) {
+        // Only use DTE-based fallback for open strategies — for closed strategies,
+        // dte minus daysLeft gives "days since entry to today", not actual holding period.
         const spanDte = strategy.dte - strategy.daysLeft;
         if (spanDte > 0) stratDaysHeld = spanDte;
       }
