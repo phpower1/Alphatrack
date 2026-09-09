@@ -1291,8 +1291,10 @@ export default function App() {
         }
       }
 
-      // 3. Fallback: if it expired, compute days between trade entry and expirationDate
-      if (days === 1 && trade.details?.expirationDate && trade.date) {
+      // 3. Fallback: if it expired (no explicit closeDate), compute days between trade entry and expirationDate
+      // Only use this when the trade has no closeDate — meaning it likely expired/was assigned
+      // rather than being explicitly closed early (e.g., bought back same day).
+      if (days === 1 && !trade.closeDate && trade.details?.expirationDate && trade.date) {
         try {
           const expDate = parseISO(trade.details.expirationDate);
           const trDate = parseISO(trade.date);
@@ -1621,7 +1623,9 @@ export default function App() {
     if (stratDaysHeld === 1) {
       if (maxDaysHeld > 1) {
         stratDaysHeld = maxDaysHeld;
-      } else if (strategy.expirationDate && itemDates.length > 0) {
+      } else if (hasOpenLeg && strategy.expirationDate && itemDates.length > 0) {
+        // Only fall back to expiration date for strategies that are still open.
+        // Closed strategies that were exited early should keep their actual holding span.
         try {
           const expT = parseISO(strategy.expirationDate).getTime();
           const minDate = Math.min(...itemDates);
