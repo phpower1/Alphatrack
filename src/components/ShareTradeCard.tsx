@@ -13,6 +13,7 @@ import {
   ArrowDownRight,
   Check,
   ClipboardCopy,
+  Clock,
   Download,
   Layers,
   Share2,
@@ -197,6 +198,7 @@ interface CardProps {
   showROI: boolean;
   showLegs: boolean;
   showCapital: boolean;
+  showDaysHeld: boolean;
 }
 
 function ShareableCard({
@@ -211,6 +213,7 @@ function ShareableCard({
   showROI,
   showLegs,
   showCapital,
+  showDaysHeld,
 }: CardProps) {
   const ts = THEMES[theme];
   const pp = PLATFORMS[platform];
@@ -239,6 +242,7 @@ function ShareableCard({
         isOpen: trade.status === 'Open',
       };
 
+  const daysHeld = Math.max(1, displayMetrics.daysHeld || 1);
   const symbol = trade.details?.rootSymbol || trade.symbol;
   const isProfit = displayMetrics.profit >= 0;
 
@@ -337,20 +341,41 @@ function ShareableCard({
                 {strategy.strategyName}
               </span>
             )}
-            <span
-              style={{
-                fontSize: '10px',
-                fontWeight: 700,
-                padding: '2px 6px',
-                borderRadius: '5px',
-                marginLeft: 'auto',
-                color: displayMetrics.isOpen ? '#34d399' : '#a1a1aa',
-                backgroundColor: displayMetrics.isOpen ? 'rgba(52, 211, 153, 0.12)' : 'rgba(33, 36, 47, 0.8)',
-                border: `1px solid ${displayMetrics.isOpen ? 'rgba(52, 211, 153, 0.3)' : ts.divider}`,
-              }}
-            >
-              {displayMetrics.isOpen ? 'OPEN' : 'CLOSED'}
-            </span>
+            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              {showDaysHeld && (
+                <span
+                  style={{
+                    fontSize: '10px',
+                    fontWeight: 600,
+                    fontFamily: "'Geist Mono Variable', monospace",
+                    padding: '2px 7px',
+                    borderRadius: '5px',
+                    color: theme === 'glass' ? '#c4b5fd' : '#818cf8',
+                    backgroundColor: theme === 'glass' ? 'rgba(167, 139, 250, 0.14)' : 'rgba(129, 140, 248, 0.12)',
+                    border: `1px solid ${theme === 'glass' ? 'rgba(167, 139, 250, 0.3)' : 'rgba(129, 140, 248, 0.25)'}`,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <Clock style={{ width: '10px', height: '10px', color: theme === 'glass' ? '#a78bfa' : '#818cf8' }} />
+                  <span>{daysHeld} {daysHeld === 1 ? 'day' : 'days'} held</span>
+                </span>
+              )}
+              <span
+                style={{
+                  fontSize: '10px',
+                  fontWeight: 700,
+                  padding: '2px 6px',
+                  borderRadius: '5px',
+                  color: displayMetrics.isOpen ? '#34d399' : '#a1a1aa',
+                  backgroundColor: displayMetrics.isOpen ? 'rgba(52, 211, 153, 0.12)' : 'rgba(33, 36, 47, 0.8)',
+                  border: `1px solid ${displayMetrics.isOpen ? 'rgba(52, 211, 153, 0.3)' : ts.divider}`,
+                }}
+              >
+                {displayMetrics.isOpen ? 'OPEN' : 'CLOSED'}
+              </span>
+            </div>
           </div>
           <div style={{ fontSize: '11px', marginTop: '4px', color: '#a1a1aa' }}>
             {isMultiLeg && strategy
@@ -471,9 +496,11 @@ function ShareableCard({
                 }}
               />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px', fontSize: '10px', color: '#8b8b96' }}>
-              <span>{displayMetrics.daysHeld} {displayMetrics.daysHeld === 1 ? 'day' : 'days'} held</span>
-            </div>
+            {showDaysHeld && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '8px', fontSize: '10px', color: '#8b8b96' }}>
+                <span>{daysHeld} {daysHeld === 1 ? 'day' : 'days'} held</span>
+              </div>
+            )}
           </div>
         )}
 
@@ -694,6 +721,7 @@ export function ShareTradeDialog({
   const [platform, setPlatform] = useState<Platform>('twitter');
   const [showDollars, setShowDollars] = useState(true);
   const [showROI, setShowROI] = useState(true);
+  const [showDaysHeld, setShowDaysHeld] = useState(true);
   const [showLegs, setShowLegs] = useState(true);
   const [showCapital, setShowCapital] = useState(true);
   const [exporting, setExporting] = useState(false);
@@ -725,7 +753,7 @@ export function ShareTradeDialog({
     });
     observer.observe(cardRef.current);
     return () => observer.disconnect();
-  }, [open, trade, metrics, strategy, strategyMetrics, note, theme, platform, showDollars, showROI, showLegs, showCapital]);
+  }, [open, trade, metrics, strategy, strategyMetrics, note, theme, platform, showDollars, showROI, showDaysHeld, showLegs, showCapital]);
 
   const targetWidth = PLATFORMS[platform].width;
   const padding = 24;
@@ -893,6 +921,7 @@ export function ShareTradeDialog({
                     showROI={showROI}
                     showLegs={showLegs}
                     showCapital={showCapital}
+                    showDaysHeld={showDaysHeld}
                   />
                 </div>
               </div>
@@ -931,6 +960,7 @@ export function ShareTradeDialog({
               {[
                 { id: 'dollars', label: 'Dollar amounts', checked: showDollars, set: setShowDollars },
                 { id: 'roi', label: 'ROI percentages', checked: showROI, set: setShowROI },
+                { id: 'days', label: 'Days held', checked: showDaysHeld, set: setShowDaysHeld },
                 { id: 'capital', label: 'Capital meter', checked: showCapital, set: setShowCapital },
                 ...(strategy && strategy.items.length > 1
                   ? [{ id: 'legs', label: 'Strategy legs', checked: showLegs, set: setShowLegs }]
