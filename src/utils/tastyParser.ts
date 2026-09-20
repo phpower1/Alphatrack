@@ -32,6 +32,7 @@ export interface ParsedOptionDetails {
   otherFees?: number;          // Clearing, regulatory, proprietary index fees
   grossValue?: number;         // Signed gross trade amount (e.g. +112.50 for STO, -34.00 for BTC)
   netValue?: number;           // Signed net cashflow including fees (e.g. +111.23 for STO, -35.27 for BTC)
+  actionDate?: string;         // Date the position was opened / trade was executed (YYYY-MM-DD)
   formattedTradeDate: string;  // "Aug 10, 2026 12:50 PM"
   rawDescription: string;
 }
@@ -275,6 +276,17 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
 
   const descUpper = description.toUpperCase().replace(/[\s_-]+/g, '_');
   const tradeDate = act['executed-at'] || act.executed_at || act.trade_date || act.settlement_date || act.date || new Date().toISOString();
+  // Action date: the calendar day the position was opened (used for strategy sub-grouping)
+  const rawActionDate = act['created-at'] || act.created_at || act['executed-at'] || act.executed_at || act.trade_date || act.date || '';
+  let actionDate: string | undefined = undefined;
+  if (rawActionDate) {
+    try {
+      const ad = new Date(rawActionDate);
+      if (!isNaN(ad.getTime())) {
+        actionDate = `${ad.getUTCFullYear()}-${(ad.getUTCMonth() + 1).toString().padStart(2, '0')}-${ad.getUTCDate().toString().padStart(2, '0')}`;
+      }
+    } catch { /* ignore */ }
+  }
 
   // 1. Determine Action & Sign
   let action: ParsedOptionDetails['action'] = 'Buy';
@@ -408,26 +420,55 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
   let strike: number | undefined = act.option_symbol?.strike_price ? parseFloat(act.option_symbol.strike_price) : (act.instrument?.strike_price ? parseFloat(act.instrument.strike_price) : undefined);
   let optionType: 'CALL' | 'PUT' | undefined = act.option_symbol?.option_type ? (act.option_symbol.option_type.toUpperCase().includes('C') ? 'CALL' : 'PUT') : (act.instrument?.option_type ? (act.instrument.option_type.toUpperCase().includes('C') ? 'CALL' : 'PUT') : undefined);
 
-  // Pattern A: OCC or Tasty compact option code: e.g. "260918P26100", "260810C19000", "240823C5750", "260911C00005500"
-  const compactOptMatch = allText.match(/(?:\b|[A-Z])(\d{2})(\d{2})(\d{2})([CP])(\d+)\b/i);
-  if (compactOptMatch) {
+  // Pattern TT: Tastytrade futures option symbols
+  // Format: "./MESZ6 EW4M6 261009P7000" or "./MCLX6 LO1V6 261015C106"
+  // The last segment contains YYMMDD + C/P + Strike
+  const tastyFutOptMatch = allText.match(/\.\//)
+    ? allText.match(/(\d{2})(\d{2})(\d{2})([CP])(\d+(?:\.\d+)?)\s*$/i)
+      || allText.match(/\s(\d{2})(\d{2})(\d{2})([CP])(\d+(?:\.\d+)?)\b/i)
+    : null;
+  if (tastyFutOptMatch) {
     isOption = true;
-    const [, yy, mm, dd, typeChar, strikeRaw] = compactOptMatch;
+    const [, yy, mm, dd, typeChar, strikeStr] = tastyFutOptMatch;
     const year = 2000 + parseInt(yy, 10);
     const monthNum = parseInt(mm, 10);
     const day = parseInt(dd, 10);
-    if (!expirationDate) {
-      expirationDate = `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+    if (monthNum >= 1 && monthNum <= 12 && day >= 1 && day <= 31) {
+      if (!expirationDate) {
+        expirationDate = `${year}-${monthNum.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+      }
+      if (!optionType) {
+        optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
+      }
+      if (strike === undefined || isNaN(strike)) {
+        strike = parseFloat(strikeStr);
+      }
     }
-    if (!optionType) {
-      optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
-    }
-    if (strike === undefined || isNaN(strike)) {
-      // If 8-digit OCC equity strike (e.g. 00005500 -> 5.50)
-      if (strikeRaw.length === 8 && strikeRaw.startsWith('000')) {
-        strike = parseInt(strikeRaw, 10) / 1000;
-      } else {
-        strike = parseFloat(strikeRaw);
+  }
+
+  // Pattern A: OCC or Tasty compact option code: e.g. "260918P26100", "260810C19000", "240823C5750", "260911C00005500"
+  // Only match if Pattern TT didn't already extract expiration
+  if (!expirationDate || strike === undefined || !optionType) {
+    const compactOptMatch = allText.match(/(?:\b|[A-Z])(\d{2})(\d{2})(\d{2})([CP])(\d+)\b/i);
+    if (compactOptMatch) {
+      isOption = true;
+      const [, yy, mm, dd, typeChar, strikeRaw] = compactOptMatch;
+      const year = 2000 + parseInt(yy, 10);
+      const monthNum = parseInt(mm, 10);
+      const day = parseInt(dd, 10);
+      if (!expirationDate && monthNum >= 1 && monthNum <= 12 && day >= 1 && day <= 31) {
+        expirationDate = `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}`;
+      }
+      if (!optionType) {
+        optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
+      }
+      if (strike === undefined || isNaN(strike)) {
+        // If 8-digit OCC equity strike (e.g. 00005500 -> 5.50)
+        if (strikeRaw.length === 8 && strikeRaw.startsWith('000')) {
+          strike = parseInt(strikeRaw, 10) / 1000;
+        } else {
+          strike = parseFloat(strikeRaw);
+        }
       }
     }
   }
@@ -479,20 +520,11 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
   }
 
   // Pattern E: Futures Contract Cycle Expiration Fallback
+  // Derive expiration from the futures cycle code (e.g. Z6 → Dec 2026 third Friday)
   if (!expirationDate && isFuture && futureCycle) {
-    const tDate = new Date(tradeDate);
-    // If trade was executed on Jul 27, it was the August 21 option cycle
-    if (tradeDate.startsWith('2026-07-27') || Math.abs(price - 93.00) < 0.01 || Math.abs(price - 117.00) < 0.01) {
-      expirationDate = '2026-08-21';
-      isOption = true;
-    } else if (tDate < new Date('2026-07-26T00:00:00Z')) {
-      // Historical trades executed before Jul 26 expired in July
-      expirationDate = '2026-07-31';
-      isOption = true;
-    } else {
-      // August trades default to September 18 cycle
-      const cycleMonthChar = futureCycle[0].toUpperCase();
-      const monthNum = FUT_CYCLE_MONTH_MAP[cycleMonthChar] || 9;
+    const cycleMonthChar = futureCycle[0].toUpperCase();
+    const monthNum = FUT_CYCLE_MONTH_MAP[cycleMonthChar];
+    if (monthNum) {
       const yearDigit = parseInt(futureCycle.slice(1), 10);
       const yearNum = yearDigit < 100 ? (2020 + (yearDigit % 10)) : yearDigit;
       expirationDate = getThirdFriday(yearNum, monthNum);
@@ -609,6 +641,7 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     otherFees,
     grossValue,
     netValue,
+    actionDate,
     formattedTradeDate: formatTradeDateTime(tradeDate),
     rawDescription: description || rawSymbol
   };
@@ -924,7 +957,9 @@ export function groupItemsByTastyStrategy<T extends {
     const futureCycle = firstItem.details?.futureCycle;
     const isFuture = Boolean(firstItem.details?.isFuture || sym.startsWith('/'));
 
-    // Step 2: Group underlying items by Expiration Date for options (forming multi-leg strategy groups) and EQUITY for stocks
+    // Step 2: Group underlying items by Expiration Date for options, then sub-group by Action Date.
+    // This matches Tastytrade's strategy grouping: legs opened on the same day with the same expiration
+    // form one strategy; legs opened on different days are separate strategies even if they share an expiration.
     const byExp: Record<string, T[]> = {};
     for (const item of uItems) {
       let groupKey = 'EQUITY';
@@ -940,99 +975,125 @@ export function groupItemsByTastyStrategy<T extends {
     const strategies: StrategyGroup<T>[] = [];
 
     for (const [expKey, expItems] of Object.entries(byExp)) {
-      // Sort legs within strategy: by strike descending, then by trade date descending
-      expItems.sort((a, b) => {
-        const sA = a.details?.strike ?? 0;
-        const sB = b.details?.strike ?? 0;
-        if (sA !== sB) return sB - sA;
-        const dA = (a as any).date || '';
-        const dB = (b as any).date || '';
-        return dB.localeCompare(dA);
-      });
-
-      // Classify strategy for this expiration bucket
-      const stratInfo = detectOptionStrategy(expItems);
-      const firstExpItem = expItems[0];
-      const details = firstExpItem.details;
-
-      let totalVal = 0;
-      let totalPnl = 0;
-      let totalRealized = 0;
-      let totalReqCap = 0;
-      let totalQty = 0;
-      let netCost = 0;
-      let netCurr = 0;
-
-      const isTradeGroup = expItems.some(i => 'status' in i || (i as any).date);
+      // Sub-group by action date (the calendar day the trade was opened)
+      // Items without an actionDate go into a fallback bucket so they group together
+      const byActionDate: Record<string, T[]> = {};
+      let hasAnyActionDate = false;
 
       for (const item of expItems) {
-        const qty = item.quantity || 1;
-        const signedQty = item.details?.signedQuantity ?? (item.details?.action === 'STO' || item.details?.action === 'STC' ? -qty : qty);
-        const itemMult = item.details?.multiplier || 1;
-        totalQty += signedQty;
-        totalVal += (item.totalValue || 0);
-        totalPnl += (item.openPnl || 0);
-        
-        const itemReq = (item.requiredCapital || (item as any).capReq || (item.totalValue && item.quantity && item.quantity > 0 ? item.totalValue : 0));
-        if (isTradeGroup) {
-          // For closed trades across the same strategy, avoid adding up both opening and closing legs' capital requirements
-          totalReqCap = Math.max(totalReqCap, itemReq);
-        } else {
-          totalReqCap += itemReq;
+        const ad = item.details?.actionDate || (item as any).date?.slice(0, 10) || '';
+        if (ad) hasAnyActionDate = true;
+        const adKey = ad || '__NO_DATE__';
+        if (!byActionDate[adKey]) {
+          byActionDate[adKey] = [];
         }
-
-        netCost += (item.averagePrice || item.price || 0) * signedQty * itemMult;
-        netCurr += (item.currentPrice || item.price || 0) * signedQty * itemMult;
-
-        if (calculateMetrics) {
-          const m = calculateMetrics(item);
-          if (m?.profit !== undefined) {
-            totalRealized += m.profit;
-          }
-        } else if ((item as any).netValue !== undefined) {
-          totalRealized += (item as any).netValue;
-        } else if (item.details?.netValue !== undefined) {
-          totalRealized += item.details.netValue;
-        }
+        byActionDate[adKey].push(item);
       }
 
-      // If strategy is a defined-risk vertical spread, cap required capital by spread width
-      if (stratInfo.strategyType === 'Vertical') {
-        const strikes = expItems
-          .map(i => i.details?.strike)
-          .filter((s): s is number => s !== undefined && !isNaN(s));
-        if (strikes.length >= 2) {
-          const width = Math.abs(Math.max(...strikes) - Math.min(...strikes));
-          const mult = expItems[0]?.details?.multiplier || 100;
-          const spreadMaxRisk = width * mult * (expItems[0]?.quantity || 1);
-          if (spreadMaxRisk > 0 && totalReqCap > spreadMaxRisk) {
-            totalReqCap = spreadMaxRisk;
+      // If no items have action dates, treat the entire expiration bucket as one strategy (legacy behavior)
+      const subBuckets: T[][] = hasAnyActionDate
+        ? Object.entries(byActionDate)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([, items]) => items)
+        : [expItems];
+
+      for (const bucketItems of subBuckets) {
+        // Sort legs within strategy: by strike descending, then by trade date descending
+        bucketItems.sort((a, b) => {
+          const sA = a.details?.strike ?? 0;
+          const sB = b.details?.strike ?? 0;
+          if (sA !== sB) return sB - sA;
+          const dA = (a as any).date || '';
+          const dB = (b as any).date || '';
+          return dB.localeCompare(dA);
+        });
+
+        // Classify strategy for this sub-bucket
+        const stratInfo = detectOptionStrategy(bucketItems);
+        const firstExpItem = bucketItems[0];
+        const details = firstExpItem.details;
+
+        let totalVal = 0;
+        let totalPnl = 0;
+        let totalRealized = 0;
+        let totalReqCap = 0;
+        let totalQty = 0;
+        let netCost = 0;
+        let netCurr = 0;
+
+        const isTradeGroup = bucketItems.some(i => 'status' in i || (i as any).date);
+
+        for (const item of bucketItems) {
+          const qty = item.quantity || 1;
+          const signedQty = item.details?.signedQuantity ?? (item.details?.action === 'STO' || item.details?.action === 'STC' ? -qty : qty);
+          const itemMult = item.details?.multiplier || 1;
+          totalQty += signedQty;
+          totalVal += (item.totalValue || 0);
+          totalPnl += (item.openPnl || 0);
+          
+          const itemReq = (item.requiredCapital || (item as any).capReq || (item.totalValue && item.quantity && item.quantity > 0 ? item.totalValue : 0));
+          if (isTradeGroup) {
+            // For closed trades across the same strategy, avoid adding up both opening and closing legs' capital requirements
+            totalReqCap = Math.max(totalReqCap, itemReq);
+          } else {
+            totalReqCap += itemReq;
+          }
+
+          netCost += (item.averagePrice || item.price || 0) * signedQty * itemMult;
+          netCurr += (item.currentPrice || item.price || 0) * signedQty * itemMult;
+
+          if (calculateMetrics) {
+            const m = calculateMetrics(item);
+            if (m?.profit !== undefined) {
+              totalRealized += m.profit;
+            }
+          } else if ((item as any).netValue !== undefined) {
+            totalRealized += (item as any).netValue;
+          } else if (item.details?.netValue !== undefined) {
+            totalRealized += item.details.netValue;
           }
         }
-      }
 
-      strategies.push({
-        id: `${sym}-${expKey}-${stratInfo.strategyType}`,
-        strategyName: stratInfo.strategyName,
-        strategyType: stratInfo.strategyType,
-        rootSymbol,
-        fullSymbol: sym,
-        futureCycle,
-        isFuture,
-        expirationDate: details?.expirationDate,
-        expirationFormatted: details?.expirationFormatted,
-        dte: details?.dte,
-        daysLeft: details?.daysLeft,
-        daysLeftFormatted: details?.daysLeftFormatted,
-        items: expItems,
-        totalQuantity: totalQty,
-        totalValue: totalVal,
-        totalOpenPnl: totalPnl,
-        totalRealizedProfit: totalRealized,
-        totalRequiredCapital: totalReqCap > 0 ? totalReqCap : (Math.abs(netCost) || 1),
-        netCostBasis: netCost,
-        netCurrentPrice: netCurr
-      });
+        // If strategy is a defined-risk vertical spread, cap required capital by spread width
+        if (stratInfo.strategyType === 'Vertical') {
+          const strikes = bucketItems
+            .map(i => i.details?.strike)
+            .filter((s): s is number => s !== undefined && !isNaN(s));
+          if (strikes.length >= 2) {
+            const width = Math.abs(Math.max(...strikes) - Math.min(...strikes));
+            const mult = bucketItems[0]?.details?.multiplier || 100;
+            const spreadMaxRisk = width * mult * (bucketItems[0]?.quantity || 1);
+            if (spreadMaxRisk > 0 && totalReqCap > spreadMaxRisk) {
+              totalReqCap = spreadMaxRisk;
+            }
+          }
+        }
+
+        // Use action date in the strategy ID to keep same-exp but different-day strategies unique
+        const actionDateKey = details?.actionDate || '';
+        strategies.push({
+          id: `${sym}-${expKey}-${actionDateKey}-${stratInfo.strategyType}`,
+          strategyName: stratInfo.strategyName,
+          strategyType: stratInfo.strategyType,
+          rootSymbol,
+          fullSymbol: sym,
+          futureCycle,
+          isFuture,
+          expirationDate: details?.expirationDate,
+          expirationFormatted: details?.expirationFormatted,
+          dte: details?.dte,
+          daysLeft: details?.daysLeft,
+          daysLeftFormatted: details?.daysLeftFormatted,
+          items: bucketItems,
+          totalQuantity: totalQty,
+          totalValue: totalVal,
+          totalOpenPnl: totalPnl,
+          totalRealizedProfit: totalRealized,
+          totalRequiredCapital: totalReqCap > 0 ? totalReqCap : (Math.abs(netCost) || 1),
+          netCostBasis: netCost,
+          netCurrentPrice: netCurr
+        });
+      }
     }
 
     // Sort strategies: earliest expiration first

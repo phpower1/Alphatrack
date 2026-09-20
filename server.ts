@@ -1579,6 +1579,10 @@ async function startServer() {
 
         const marketValue = +(rawUnits * closePrice * multiplier).toFixed(2);
 
+        // Forward position creation/update timestamps for action-date strategy grouping
+        const createdAt = p["created-at"] || p.created_at || "";
+        const updatedAt = p["updated-at"] || p.updated_at || "";
+
         return {
           symbol,
           underlying_symbol: underlyingSymbol,
@@ -1596,6 +1600,8 @@ async function startServer() {
           open_pnl: openPnl,
           cap_req: capReq > 0 ? capReq : undefined,
           required_capital: capReq > 0 ? capReq : undefined,
+          created_at: createdAt || undefined,
+          updated_at: updatedAt || undefined,
           raw: p
         };
       });

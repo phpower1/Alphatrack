@@ -730,6 +730,16 @@ export default function App() {
                 entryDate = subDays(new Date(), daysAgo).toISOString();
               }
 
+              // Backfill actionDate for strategy grouping if the parser couldn't extract it
+              if (!details.actionDate && entryDate) {
+                try {
+                  const ad = new Date(entryDate);
+                  if (!isNaN(ad.getTime())) {
+                    details.actionDate = `${ad.getUTCFullYear()}-${(ad.getUTCMonth() + 1).toString().padStart(2, '0')}-${ad.getUTCDate().toString().padStart(2, '0')}`;
+                  }
+                } catch { /* ignore */ }
+              }
+
               let openPnl = 0;
               if (p.open_pnl !== undefined && p.open_pnl !== null && !isNaN(parseFloat(p.open_pnl))) {
                 openPnl = parseFloat(p.open_pnl);
@@ -897,6 +907,16 @@ export default function App() {
                 if (!entryDate && details.dte !== undefined && details.daysLeft !== undefined && details.dte > details.daysLeft) {
                   const daysAgo = details.dte - details.daysLeft;
                   entryDate = subDays(new Date(), daysAgo).toISOString();
+                }
+
+                // Backfill actionDate for strategy grouping if the parser couldn't extract it
+                if (!details.actionDate && entryDate) {
+                  try {
+                    const ad = new Date(entryDate);
+                    if (!isNaN(ad.getTime())) {
+                      details.actionDate = `${ad.getUTCFullYear()}-${(ad.getUTCMonth() + 1).toString().padStart(2, '0')}-${ad.getUTCDate().toString().padStart(2, '0')}`;
+                    }
+                  } catch { /* ignore */ }
                 }
 
                 const brokerCapReq = parseFloat(
