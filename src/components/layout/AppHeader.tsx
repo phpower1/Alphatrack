@@ -27,7 +27,8 @@ import { formatMoney } from '../../lib/format';
 import type { BrokerageConnection, SnapTradeAccount } from '../../types';
 
 export interface AppHeaderProps {
-  user: User;
+  user: User | null;
+  isGuestMode: boolean;
   accounts: SnapTradeAccount[];
   selectedAccountId: string;
   onSelectAccount: (id: string) => void;
@@ -55,11 +56,11 @@ function useTicker(intervalMs: number, enabled: boolean) {
   }, [intervalMs, enabled]);
 }
 
-function Avatar({ user, size }: { user: User; size: 'sm' | 'lg' }) {
+function Avatar({ user, size }: { user: User | null; size: 'sm' | 'lg' }) {
   const dimension = size === 'sm' ? 'size-6' : 'size-10';
   const rounding = size === 'sm' ? 'rounded-lg' : 'rounded-xl';
 
-  if (user.photoURL) {
+  if (user?.photoURL) {
     return (
       <img
         src={user.photoURL}
@@ -68,6 +69,8 @@ function Avatar({ user, size }: { user: User; size: 'sm' | 'lg' }) {
       />
     );
   }
+
+  const initial = user?.email ? user.email[0].toUpperCase() : null;
 
   return (
     <div
@@ -79,7 +82,7 @@ function Avatar({ user, size }: { user: User; size: 'sm' | 'lg' }) {
       )}
       aria-hidden="true"
     >
-      {user.email ? user.email[0].toUpperCase() : <UserIcon className="size-4" />}
+      {initial || <UserIcon className="size-4" />}
     </div>
   );
 }
@@ -129,6 +132,7 @@ function MenuRow({
 
 export function AppHeader({
   user,
+  isGuestMode,
   accounts,
   selectedAccountId,
   onSelectAccount,
@@ -294,7 +298,7 @@ export function AppHeader({
                 </span>
                 <span className="hidden flex-col items-start leading-tight sm:flex">
                   <span className="max-w-[130px] truncate text-xs font-semibold text-foreground">
-                    {user.displayName || user.email?.split('@')[0] || 'Trader'}
+                    {isGuestMode ? 'Guest' : (user?.displayName || user?.email?.split('@')[0] || 'Trader')}
                   </span>
                   <span className="text-[10px] text-muted-foreground">
                     {brokerCount} {brokerCount === 1 ? 'broker' : 'brokers'}
@@ -309,12 +313,21 @@ export function AppHeader({
               <Avatar user={user} size="lg" />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-bold text-foreground">
-                  {user.displayName || user.email?.split('@')[0] || 'Trading Account'}
+                  {isGuestMode ? 'Guest Explorer' : (user?.displayName || user?.email?.split('@')[0] || 'Trading Account')}
                 </div>
-                <div className="truncate text-[11px] text-muted-foreground">{user.email}</div>
+                <div className="truncate text-[11px] text-muted-foreground">{isGuestMode ? 'No account — demo data' : user?.email}</div>
                 <div className="mt-0.5 flex items-center gap-1.5">
-                  <span className="size-1.5 rounded-full bg-profit" aria-hidden="true" />
-                  <span className="text-[10px] font-medium text-profit">Authenticated</span>
+                  {isGuestMode ? (
+                    <>
+                      <span className="size-1.5 rounded-full bg-strategy" aria-hidden="true" />
+                      <span className="text-[10px] font-medium text-strategy">Guest Mode</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="size-1.5 rounded-full bg-profit" aria-hidden="true" />
+                      <span className="text-[10px] font-medium text-profit">Authenticated</span>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
@@ -394,7 +407,7 @@ export function AppHeader({
               className="flex w-full cursor-pointer items-center gap-2.5 rounded-xl p-2 text-xs font-semibold text-loss transition-colors hover:bg-loss/10 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
             >
               <LogOut className="size-4" aria-hidden="true" />
-              Sign out
+              {isGuestMode ? 'Exit Demo' : 'Sign out'}
             </button>
           </DropdownMenuContent>
         </DropdownMenu>

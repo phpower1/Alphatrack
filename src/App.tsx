@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   DollarSign,
   ExternalLink,
+  Eye,
   Key,
   Layers,
   Lock,
@@ -176,12 +177,19 @@ const pairOpenAndClosingTrades = (trades: Trade[]): Trade[] => {
 };
 
 
+/** Synthetic UID used for guest/demo mode — the server returns mock data for any unregistered UID. */
+const GUEST_UID = '__guest_demo__';
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthReady, setIsAuthReady] = useState(false);
+  const [isGuestMode, setIsGuestMode] = useState(false);
   const [dbError, setDbError] = useState<string | null>(null);
   const [authError, setAuthError] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
+
+  /** Returns the effective UID for API calls — real user or guest synthetic. */
+  const activeUid = user?.uid ?? (isGuestMode ? GUEST_UID : '');
 
   // SnapTrade API status & state
   const [apiStatus, setApiStatus] = useState<{ isConfigured: boolean; mode: string; clientIdMasked: string | null }>({
@@ -1065,32 +1073,34 @@ export default function App() {
   }, [activeTradeId]);
 
   const handleRefresh = async () => {
-    if (!user) return;
+    if (!activeUid) return;
     setRefreshing(true);
     try {
-      // Trigger live sync on all connected brokerages with SnapTrade
-      const currentConns = connections.filter(c => !c.disabled);
-      if (currentConns.length > 0) {
-        await Promise.allSettled(
-          currentConns.map(c =>
-            fetch(`/api/snaptrade/connections/${c.id}/refresh`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ uid: user.uid })
-            })
-          )
-        );
+      // Trigger live sync on all connected brokerages with SnapTrade (skip for guest mode)
+      if (!isGuestMode) {
+        const currentConns = connections.filter(c => !c.disabled);
+        if (currentConns.length > 0) {
+          await Promise.allSettled(
+            currentConns.map(c =>
+              fetch(`/api/snaptrade/connections/${c.id}/refresh`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ uid: activeUid })
+              })
+            )
+          );
+        }
       }
     } catch (e) {
       console.warn('Background brokerage refresh triggered:', e);
     }
-    await fetchAllData(user.uid);
+    await fetchAllData(activeUid);
     setRefreshing(false);
   };
 
   // Launch SnapTrade Connection Portal (supports reconnect mode for expired/disabled sessions)
   const handleOpenConnectionPortal = async (reconnectId?: string) => {
-    if (!user) return;
+    if (!activeUid) return;
     setPortalLoading(true);
     setPortalError('');
     setPortalDialogOpen(true);
@@ -1100,7 +1110,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          uid: user.uid,
+          uid: activeUid,
           reconnect: typeof reconnectId === 'string' && reconnectId.trim() ? reconnectId.trim() : undefined,
           connectionType: 'trade-if-available'
         })
@@ -1837,6 +1847,23 @@ export default function App() {
     }
   };
 
+  /** Enter guest mode: load the dashboard with mock demo data, zero auth. */
+  const handleEnterGuestMode = () => {
+    setIsGuestMode(true);
+    fetchAllData(GUEST_UID);
+  };
+
+  /** Leave guest mode and return to the login screen. */
+  const handleExitGuestMode = () => {
+    setIsGuestMode(false);
+    setAccounts([]);
+    setTrades([]);
+    setPositions([]);
+    setConnections([]);
+    setLastSyncedAt(null);
+    setSyncError(null);
+  };
+
   if (!isAuthReady) {
     return (
       <div
@@ -1860,7 +1887,7 @@ export default function App() {
     );
   }
 
-  if (!user) {
+  if (!user && !isGuestMode) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
         <Card className="w-full max-w-md bg-card border-border text-foreground shadow-2xl">
@@ -1899,6 +1926,23 @@ export default function App() {
               )}
               {isSigningIn ? 'Opening Google Login...' : 'Sign in with Google'}
             </Button>
+
+            <div className="relative flex items-center gap-3 my-1">
+              <span className="flex-1 h-px bg-border" />
+              <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">or</span>
+              <span className="flex-1 h-px bg-border" />
+            </div>
+
+            <Button
+              onClick={handleEnterGuestMode}
+              variant="outline"
+              size="lg"
+              className="w-full py-6 rounded-xl flex items-center justify-center gap-3 text-foreground border-border hover:bg-surface-3 hover:border-brand/40 transition-all cursor-pointer"
+            >
+              <Eye className="w-5 h-5 text-brand" />
+              Explore Demo — No account needed
+            </Button>
+
             <div className="flex items-center justify-center gap-2 text-xs text-subtle-foreground mt-2">
               <ShieldCheck className="w-4 h-4 text-profit" />
               <span>Supports Tastytrade, Robinhood, Schwab, Fidelity, Webull & 100+ brokers</span>
@@ -1922,20 +1966,21 @@ export default function App() {
     <div className="min-h-screen flex flex-col font-sans bg-background text-foreground antialiased selection:bg-brand selection:text-foreground">
       <AppHeader
         user={user}
+        isGuestMode={isGuestMode}
         accounts={accounts}
         selectedAccountId={selectedAccountId}
         onSelectAccount={setSelectedAccountId}
         connections={connections}
         tastyConnected={tastyConnected}
         dbError={dbError}
-        isDemoData={!apiStatus.isConfigured && accounts.length > 0}
+        isDemoData={isGuestMode || (!apiStatus.isConfigured && accounts.length > 0)}
         refreshing={refreshing}
         lastSyncedAt={lastSyncedAt}
         onRefresh={handleRefresh}
         onOpenTastyDialog={() => setTastyDialogOpen(true)}
         onOpenConnectionsDialog={() => setConnectionsDialogOpen(true)}
         onOpenConnectionPortal={() => handleOpenConnectionPortal()}
-        onSignOut={logout}
+        onSignOut={isGuestMode ? handleExitGuestMode : logout}
       />
 
       {/* Sync failures were previously silent — only a console.error. */}
