@@ -8,6 +8,13 @@ import axios from "axios";
 import admin from "firebase-admin";
 import { getFirestore } from "firebase-admin/firestore";
 import { Snaptrade, SnaptradeAuth, CommercialApiKeyAuth } from "snaptrade-typescript-sdk";
+import {
+  generateDefaultOgSvg,
+  generateTradeOgSvg,
+  renderSvgToPng,
+  parseTradeFromQuery,
+  injectTradeOgMeta,
+} from "./src/utils/serverOg.ts";
 
 dotenv.config();
 
@@ -2173,11 +2180,39 @@ async function startServer() {
     res.json({ success: true });
   });
 
+  // ── Open Graph Dynamic Image Endpoints ──────────────────────────────────
+  app.get("/api/og/default", (req, res) => {
+    try {
+      const svg = generateDefaultOgSvg();
+      const pngBuffer = renderSvgToPng(svg, 1200);
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Cache-Control", "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400");
+      return res.end(pngBuffer);
+    } catch (err: any) {
+      console.error("[OG] Failed to render default OG image:", err);
+      return res.status(500).json({ error: "Failed to render OG image" });
+    }
+  });
+
+  app.get("/api/og/trade", (req, res) => {
+    try {
+      const tradeData = parseTradeFromQuery(req.query);
+      const svg = generateTradeOgSvg(tradeData);
+      const pngBuffer = renderSvgToPng(svg, 1200);
+      res.setHeader("Content-Type", "image/png");
+      res.setHeader("Cache-Control", "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400");
+      return res.end(pngBuffer);
+    } catch (err: any) {
+      console.error("[OG] Failed to render trade OG image:", err);
+      return res.status(500).json({ error: "Failed to render trade OG image" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
       server: { middlewareMode: true },
-      appType: "spa",
+      appType: "custom",
     });
     app.use(vite.middlewares);
 
@@ -2191,6 +2226,11 @@ async function startServer() {
         const indexPath = path.resolve(process.cwd(), "index.html");
         let template = fs.readFileSync(indexPath, "utf-8");
         template = await vite.transformIndexHtml(url, template);
+        if (url.startsWith("/share/trade")) {
+          const tradeData = parseTradeFromQuery(req.query);
+          const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "http";
+          template = injectTradeOgMeta(template, tradeData, url, req.get("host"), proto);
+        }
         res.status(200).set({
           "Content-Type": "text/html",
           "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -2224,7 +2264,15 @@ async function startServer() {
         "Pragma": "no-cache",
         "Expires": "0",
       });
-      res.sendFile(path.join(distPath, 'index.html'));
+      const indexPath = path.join(distPath, 'index.html');
+      if (req.originalUrl.startsWith("/share/trade") && fs.existsSync(indexPath)) {
+        let template = fs.readFileSync(indexPath, "utf-8");
+        const tradeData = parseTradeFromQuery(req.query);
+        const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol || "https";
+        template = injectTradeOgMeta(template, tradeData, req.originalUrl, req.get("host"), proto);
+        return res.status(200).set({ "Content-Type": "text/html" }).send(template);
+      }
+      res.sendFile(indexPath);
     });
   }
 

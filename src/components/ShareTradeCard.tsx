@@ -16,9 +16,11 @@ import {
   Clock,
   Download,
   Layers,
+  Link2,
   Share2,
   X,
 } from 'lucide-react';
+import { encodeTradePayload } from '../utils/shareUtils';
 import {
   Dialog,
   DialogContent,
@@ -60,6 +62,8 @@ export interface StrategyMetricsData {
   netCurrentPrice: number;
 }
 
+export type CardTheme = 'dark' | 'glass' | 'minimal';
+
 export interface ShareTradeDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -67,9 +71,9 @@ export interface ShareTradeDialogProps {
   metrics: RoiMetrics | null;
   strategy: StrategyGroup<any> | null;
   strategyMetrics: StrategyMetricsData | null;
+  initialNote?: string;
+  initialTheme?: CardTheme;
 }
-
-type CardTheme = 'dark' | 'glass' | 'minimal';
 
 /* -------------------------------------------------------------------------- */
 /*  Platform presets                                                           */
@@ -710,14 +714,16 @@ export function ShareTradeDialog({
   metrics,
   strategy,
   strategyMetrics,
+  initialNote,
+  initialTheme,
 }: ShareTradeDialogProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState<number>(0);
   const [cardHeight, setCardHeight] = useState<number | null>(null);
 
-  const [note, setNote] = useState('');
-  const [theme, setTheme] = useState<CardTheme>('dark');
+  const [note, setNote] = useState(initialNote || '');
+  const [theme, setTheme] = useState<CardTheme>(initialTheme || 'dark');
   const [platform, setPlatform] = useState<Platform>('twitter');
   const [showDollars, setShowDollars] = useState(true);
   const [showROI, setShowROI] = useState(true);
@@ -726,6 +732,14 @@ export function ShareTradeDialog({
   const [showCapital, setShowCapital] = useState(true);
   const [exporting, setExporting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      if (initialNote !== undefined) setNote(initialNote);
+      if (initialTheme) setTheme(initialTheme);
+    }
+  }, [open, initialNote, initialTheme]);
 
   // Measure container width for responsive scaling
   useEffect(() => {
@@ -812,24 +826,93 @@ export function ShareTradeDialog({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy to clipboard:', err);
+      console.error('Failed to copy image to clipboard:', err);
     } finally {
       setExporting(false);
     }
   }, [generateImage]);
 
+  const getShareUrl = useCallback(() => {
+    if (!trade || !metrics) return typeof window !== 'undefined' ? window.location.href : '';
+    const isMultiLeg = strategy && strategy.items.length > 1;
+    const displayMetrics = isMultiLeg && strategyMetrics
+      ? {
+          profit: strategyMetrics.netProfit,
+          avgROI: strategyMetrics.avgROI,
+          annualizedROI: strategyMetrics.annualizedROI,
+          avgCap: strategyMetrics.totalAvgCapital,
+          daysHeld: strategyMetrics.daysHeld,
+        }
+      : {
+          profit: metrics.profit,
+          avgROI: metrics.avgROI,
+          annualizedROI: metrics.annualizedROI,
+          avgCap: metrics.avgCapital,
+          daysHeld: metrics.daysHeld,
+        };
+
+    const symbol = trade.details?.rootSymbol || trade.symbol || 'TRADE';
+    const strategyName = strategy?.strategyName || (trade.details?.isOption ? 'Single Leg Option' : 'Equity Asset');
+    const pnl = showDollars ? formatMoney(displayMetrics.profit) : (displayMetrics.profit >= 0 ? '+Gain' : '-Loss');
+    const roi = showROI ? formatPercent(displayMetrics.avgROI) : '';
+    const annRoi = showROI && displayMetrics.annualizedROI !== undefined ? formatPercent(displayMetrics.annualizedROI) : undefined;
+    const daysHeldText = showDaysHeld ? `${displayMetrics.daysHeld || 1}d` : '';
+    const capital = showCapital && displayMetrics.avgCap > 0 ? formatMoney(displayMetrics.avgCap) : '';
+
+    const payload = {
+      symbol,
+      strategyName,
+      profitFormatted: pnl,
+      isProfit: displayMetrics.profit >= 0,
+      roiFormatted: roi,
+      annualizedRoiFormatted: annRoi,
+      daysHeldText,
+      capitalFormatted: capital,
+      note: note || undefined,
+      theme,
+      dateFormatted: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    };
+
+    const encoded = encodeTradePayload(payload);
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    return `${origin}/share/trade?d=${encoded}`;
+  }, [trade, metrics, strategy, strategyMetrics, note, theme, showDollars, showROI, showDaysHeld, showCapital]);
+
+  const handleCopyLink = useCallback(async () => {
+    const url = getShareUrl();
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy link:', err);
+    }
+  }, [getShareUrl]);
+
   const handleShare = useCallback(async () => {
     if (!navigator.share) return;
     setExporting(true);
     try {
-      const blob = await generateImage();
-      if (!blob) return;
+      const shareUrl = getShareUrl();
       const symbol = trade?.details?.rootSymbol || trade?.symbol || 'trade';
-      const file = new File([blob], `alphatrack-${symbol}.png`, { type: 'image/png' });
+      const blob = await generateImage();
+      if (blob) {
+        const file = new File([blob], `alphatrack-${symbol}.png`, { type: 'image/png' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            title: `${symbol} Trade Card`,
+            text: note || `${symbol} ${strategy?.strategyName || 'Trade'} on Alphatrack`,
+            url: shareUrl,
+            files: [file],
+          });
+          return;
+        }
+      }
       await navigator.share({
         title: `${symbol} Trade Card`,
-        text: note || undefined,
-        files: [file],
+        text: note || `${symbol} ${strategy?.strategyName || 'Trade'} on Alphatrack`,
+        url: shareUrl,
       });
     } catch (err) {
       // User cancelled share — not an error
@@ -839,7 +922,7 @@ export function ShareTradeDialog({
     } finally {
       setExporting(false);
     }
-  }, [generateImage, trade, note]);
+  }, [generateImage, trade, note, strategy, getShareUrl]);
 
   if (!trade || !metrics) return null;
 
@@ -1018,7 +1101,7 @@ export function ShareTradeDialog({
           <Button
             onClick={handleDownload}
             disabled={exporting}
-            className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold px-4 cursor-pointer flex-1 min-w-[130px] h-9.5"
+            className="bg-brand-fill hover:bg-brand-fill/85 text-foreground text-xs font-semibold px-3.5 cursor-pointer flex-1 min-w-[120px] h-9.5"
           >
             <Download className="size-3.5 mr-1.5" />
             Download PNG
@@ -1027,17 +1110,35 @@ export function ShareTradeDialog({
             onClick={handleCopy}
             disabled={exporting}
             variant="outline"
-            className="border-border text-muted-foreground hover:text-foreground text-xs cursor-pointer flex-1 min-w-[130px] h-9.5"
+            className="border-border text-muted-foreground hover:text-foreground text-xs cursor-pointer flex-1 min-w-[120px] h-9.5"
           >
             {copied ? (
               <>
                 <Check className="size-3.5 mr-1.5 text-profit" />
-                Copied!
+                Image Copied!
               </>
             ) : (
               <>
                 <ClipboardCopy className="size-3.5 mr-1.5" />
-                Copy to Clipboard
+                Copy Image
+              </>
+            )}
+          </Button>
+          <Button
+            onClick={handleCopyLink}
+            disabled={exporting}
+            variant="outline"
+            className="border-border text-muted-foreground hover:text-foreground text-xs cursor-pointer flex-1 min-w-[120px] h-9.5"
+          >
+            {copiedLink ? (
+              <>
+                <Check className="size-3.5 mr-1.5 text-profit" />
+                Link Copied!
+              </>
+            ) : (
+              <>
+                <Link2 className="size-3.5 mr-1.5 text-brand" />
+                Copy Share Link
               </>
             )}
           </Button>
@@ -1047,6 +1148,7 @@ export function ShareTradeDialog({
               disabled={exporting}
               variant="outline"
               className="border-border text-muted-foreground hover:text-foreground text-xs cursor-pointer shrink-0 h-9.5 px-3.5"
+              title="Share card via device share sheet"
             >
               <Share2 className="size-3.5 mr-1.5" />
               Share

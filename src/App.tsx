@@ -74,7 +74,8 @@ import { Spinner } from './components/Spinner';
 import { formatMoney } from './lib/format';
 import { Sparkline } from './components/viz/Sparkline';
 import { SplitMeter, WinLossBar } from './components/viz/SplitMeter';
-import { ShareTradeDialog } from './components/ShareTradeCard';
+import { ShareTradeDialog, CardTheme } from './components/ShareTradeCard';
+import { decodeTradePayload, createSyntheticTradeFromPayload, SyntheticShareData } from './utils/shareUtils';
 
 // Local / Firestore persistence helpers for Tastytrade session
 const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
@@ -239,6 +240,29 @@ export default function App() {
   const [inspectorMode, setInspectorMode] = useState<'strategy' | 'leg'>('strategy');
   const [connectionsDialogOpen, setConnectionsDialogOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [sharedTradeData, setSharedTradeData] = useState<SyntheticShareData | null>(null);
+
+  // Automatically detect and open shared trade links (/share/trade?d=...)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      if (url.pathname.startsWith('/share/trade') || url.searchParams.has('d')) {
+        const d = url.searchParams.get('d');
+        if (d) {
+          const payload = decodeTradePayload(d);
+          if (payload) {
+            const synthetic = createSyntheticTradeFromPayload(payload);
+            setSharedTradeData(synthetic);
+            setIsGuestMode(true);
+            setShareDialogOpen(true);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse shared trade URL:', e);
+    }
+  }, []);
 
   // User Configuration Menu Dropdown State
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -3232,11 +3256,21 @@ export default function App() {
       {/* Share Trade Card Dialog */}
       <ShareTradeDialog
         open={shareDialogOpen}
-        onOpenChange={setShareDialogOpen}
-        trade={activeTrade}
-        metrics={activeMetrics}
-        strategy={activeStrategy}
-        strategyMetrics={strategyMetrics}
+        onOpenChange={(isOpen) => {
+          setShareDialogOpen(isOpen);
+          if (!isOpen && sharedTradeData) {
+            setSharedTradeData(null);
+            if (window.location.pathname.startsWith('/share/trade')) {
+              window.history.replaceState({}, '', '/');
+            }
+          }
+        }}
+        trade={sharedTradeData ? sharedTradeData.trade : activeTrade}
+        metrics={sharedTradeData ? sharedTradeData.metrics : activeMetrics}
+        strategy={sharedTradeData ? sharedTradeData.strategy : activeStrategy}
+        strategyMetrics={sharedTradeData ? sharedTradeData.strategyMetrics : strategyMetrics}
+        initialNote={sharedTradeData?.note}
+        initialTheme={sharedTradeData?.theme as CardTheme}
       />
     </div>
   );
