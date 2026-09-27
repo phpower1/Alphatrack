@@ -51,6 +51,14 @@ export interface Trade {
   otherFees?: number;
   grossValue?: number;
   netValue?: number;
+  linkedTradeId?: string;
+  closingTrade?: Trade;
+  openingTrade?: Trade;
+  isOpeningLeg?: boolean;
+  isClosingLeg?: boolean;
+  roundTripProfit?: number;
+  roundTripFees?: number;
+  holdingDays?: number;
 }
 
 export interface Position {

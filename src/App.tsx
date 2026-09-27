@@ -2,9 +2,11 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { differenceInDays, parseISO, subDays, subMonths, subYears, startOfYear, isAfter, isSameDay } from 'date-fns';
 import {
   AlertCircle,
+  ArrowRight,
   Building2,
   Check,
   CheckCircle2,
+  Clock,
   DollarSign,
   ExternalLink,
   Eye,
@@ -119,7 +121,7 @@ const pairOpenAndClosingTrades = (trades: Trade[]): Trade[] => {
   // Build contract key for matching: rootSymbol + expiration + strike + optionType
   const contractKey = (t: Trade): string => {
     const d = t.details;
-    const root = (d?.rootSymbol || t.symbol || '').toUpperCase();
+    const root = (d?.rootSymbol || t.symbol || '').toUpperCase().replace('/', '');
     const exp = d?.expirationDate || 'NO_EXP';
     const strike = d?.strike !== undefined ? d.strike.toString() : 'NO_STRIKE';
     const optType = d?.optionType || 'NO_TYPE';
@@ -144,33 +146,84 @@ const pairOpenAndClosingTrades = (trades: Trade[]): Trade[] => {
 
   // For each contract group, pair openers with closers
   for (const [, group] of byContract) {
-    if (group.closers.length === 0) continue;
+    if (group.closers.length === 0 || group.openers.length === 0) continue;
 
     // Sort closers by date (earliest first) so we pair in chronological order
     group.closers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+    // Sort openers by date (earliest first)
+    group.openers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
     for (const opener of group.openers) {
-      if (opener.status !== 'Open') continue; // Already marked closed
+      if (opener.closingTrade) continue; // Already paired
 
-      // Find a closer that matches this opener's quantity
-      const closerIdx = group.closers.findIndex(c => c.quantity === opener.quantity);
+      const openerDate = opener.date || '';
+
+      // Find an available closer that happened on or after opener's date and matches quantity
+      let closerIdx = group.closers.findIndex(
+        c => !c.openingTrade && c.quantity === opener.quantity && (c.date || '') >= openerDate
+      );
+
+      // Fallback: any available closer on or after openerDate
       if (closerIdx === -1) {
-        // Also try matching any closer (for partial fills we just use the first available)
-        if (group.closers.length > 0) {
-          const closer = group.closers[0];
-          opener.status = 'Closed';
-          opener.closePrice = closer.price;
-          opener.closeDate = closer.date;
-          group.closers.splice(0, 1);
-        }
-        continue;
+        closerIdx = group.closers.findIndex(
+          c => !c.openingTrade && (c.date || '') >= openerDate
+        );
       }
 
+      // If still not found, allow pairing with any available closer for this contract
+      if (closerIdx === -1) {
+        closerIdx = group.closers.findIndex(c => !c.openingTrade);
+      }
+
+      if (closerIdx === -1) continue;
+
       const closer = group.closers[closerIdx];
+
+      // Bidirectionally link opener and closer
       opener.status = 'Closed';
       opener.closePrice = closer.price;
       opener.closeDate = closer.date;
-      group.closers.splice(closerIdx, 1);
+      opener.closingTrade = closer;
+      opener.linkedTradeId = closer.id;
+      opener.isOpeningLeg = true;
+
+      closer.status = 'Closed';
+      closer.openingTrade = opener;
+      closer.linkedTradeId = opener.id;
+      closer.isClosingLeg = true;
+
+      // Calculate round-trip financials
+      const mult = opener.details?.multiplier || closer.details?.multiplier || 1;
+      const openFees = opener.fees || opener.details?.fees || 0;
+      const closeFees = closer.fees || closer.details?.fees || 0;
+      const totalFees = openFees + closeFees;
+      opener.roundTripFees = totalFees;
+      closer.roundTripFees = totalFees;
+
+      let roundTripProfit = 0;
+      if (opener.netValue !== undefined && closer.netValue !== undefined) {
+        roundTripProfit = opener.netValue + closer.netValue;
+      } else {
+        const isShort = opener.details?.action === 'STO' || opener.type === 'Sell';
+        if (isShort) {
+          roundTripProfit = ((opener.price - closer.price) * opener.quantity * mult) - totalFees;
+        } else {
+          roundTripProfit = ((closer.price - opener.price) * opener.quantity * mult) - totalFees;
+        }
+      }
+      opener.roundTripProfit = roundTripProfit;
+      closer.roundTripProfit = roundTripProfit;
+
+      // Holding duration
+      let days = 1;
+      if (opener.date && closer.date) {
+        try {
+          const d = differenceInDays(parseISO(closer.date), parseISO(opener.date));
+          if (!isNaN(d) && d > 0) days = d;
+        } catch {}
+      }
+      opener.holdingDays = days;
+      closer.holdingDays = days;
     }
   }
 
@@ -1550,6 +1603,34 @@ export default function App() {
 
   const activeMetrics = activeTrade ? calculateROI(activeTrade) : null;
 
+  const linkedRoundTrip = useMemo(() => {
+    if (!activeTrade) return null;
+    const opener = activeTrade.isClosingLeg
+      ? (activeTrade.openingTrade || activeTrade)
+      : activeTrade;
+    const closer = activeTrade.isOpeningLeg
+      ? (activeTrade.closingTrade || activeTrade)
+      : (activeTrade.isClosingLeg ? activeTrade : activeTrade.closingTrade);
+
+    if (opener && closer && opener.id !== closer.id) {
+      return { opener, closer };
+    }
+
+    if (activeStrategy && activeStrategy.items.length >= 2) {
+      const op = activeStrategy.items.find(
+        (i: any) => !i.isClosingLeg && (i.details?.action === 'STO' || i.details?.action === 'BTO')
+      );
+      const cl = activeStrategy.items.find(
+        (i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC'
+      );
+      if (op && cl) {
+        return { opener: op as Trade, closer: cl as Trade };
+      }
+    }
+
+    return null;
+  }, [activeTrade, activeStrategy]);
+
   // Strategy Metrics Calculator (Lifecycle-Weighted Option A) - Shared between Table & Inspector
   const calculateStrategyMetrics = useCallback((strategy: StrategyGroup<any> | null) => {
     if (!strategy) return null;
@@ -2366,14 +2447,14 @@ export default function App() {
                         </div>
                         <div className="text-[11px] text-muted-foreground mt-1 font-sans">
                           {activeStrategy 
-                            ? `${activeStrategy.strategyName} (${activeStrategy.items.length} ${activeStrategy.items.length === 1 ? 'leg' : 'legs'} · ${activeStrategy.expirationFormatted || 'Active'})`
+                            ? `${activeStrategy.strategyName} (${activeStrategy.items.some((i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC') ? '1 leg · Closed Round-Trip' : `${activeStrategy.items.length} ${activeStrategy.items.length === 1 ? 'leg' : 'legs'}`} · ${activeStrategy.expirationFormatted || 'Active'})`
                             : activeTrade.details?.isOption 
                               ? (activeTrade.details.isFuture ? 'Option on Future Contract' : 'Equity Option Contract')
                               : (activeTrade.details?.isFuture ? 'Futures Instrument' : 'Equity Asset')}
                         </div>
                       </div>
 
-                      {/* View Switcher if Multi-Leg Strategy */}
+                      {/* View Switcher if Multi-Leg Strategy or Round-Trip Pair */}
                       {activeStrategy && activeStrategy.items.length > 1 && (
                         <div className="flex items-center bg-surface-0 p-1 rounded-xl border border-border/80 mb-4 text-xs font-sans">
                           <button
@@ -2385,7 +2466,11 @@ export default function App() {
                             }`}
                           >
                             <Layers className="w-3.5 h-3.5 text-strategy" />
-                            <span>Whole Strategy ({activeStrategy.items.length} legs)</span>
+                            <span>
+                              {activeStrategy.items.some((i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC')
+                                ? 'Whole Trade (Round-Trip)'
+                                : `Whole Strategy (${activeStrategy.items.length} legs)`}
+                            </span>
                           </button>
                           <button
                             onClick={() => setInspectorMode('leg')}
@@ -2401,13 +2486,17 @@ export default function App() {
                         </div>
                       )}
 
-                      {/* Multi-Leg Strategy Breakdown Card if strategy has > 1 leg */}
+                      {/* Multi-Leg / Round-Trip Strategy Breakdown Card if strategy has > 1 leg */}
                       {activeStrategy && activeStrategy.items.length > 1 && (
                         <div className="bg-surface-2 border border-strategy/30 rounded-xl p-3 mb-4 font-sans">
                           <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2 border-b border-border/80 pb-1.5">
                             <div className="flex items-center gap-1.5">
                               <span className="w-2 h-2 rounded-full bg-strategy"></span>
-                              <span className="font-bold text-strategy">{activeStrategy.strategyName} Multi-Leg Structure</span>
+                              <span className="font-bold text-strategy">
+                                {activeStrategy.items.some((i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC')
+                                  ? 'Completed Round-Trip Executions'
+                                  : `${activeStrategy.strategyName} Multi-Leg Structure`}
+                              </span>
                             </div>
                             <span className={`font-mono font-bold ${(strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl) >= 0 ? 'text-profit' : 'text-loss'}`}>
                               <PnL value={strategyMetrics?.netProfit ?? activeStrategy.totalOpenPnl} />
@@ -2418,6 +2507,8 @@ export default function App() {
                               const isThisLeg = item.id === activeTrade.id;
                               const legAction = item.details?.action;
                               const legQty = item.quantity;
+                              const isClose = item.isClosingLeg || legAction === 'BTC' || legAction === 'STC';
+                              const isOpen = item.isOpeningLeg || legAction === 'BTO' || legAction === 'STO';
                               const signedQtyDisplay = legAction === 'STO' || legAction === 'STC'
                                 ? `-${Math.abs(legQty)}`
                                 : `+${Math.abs(legQty)}`;
@@ -2428,9 +2519,7 @@ export default function App() {
                                   key={`strat-item-${item.id}`}
                                   onClick={() => {
                                     setActiveTradeId(item.id);
-                                    if (inspectorMode === 'strategy') {
-                                      // Keep strategy or allow quick leg peek
-                                    }
+                                    setInspectorMode('leg');
                                   }}
                                   className={`flex items-center justify-between p-1.5 rounded-lg cursor-pointer transition-colors ${
                                     isThisLeg ? 'bg-brand-fill/25 border border-brand/40 text-foreground' : 'hover:bg-surface-3/60 text-muted-foreground'
@@ -2442,6 +2531,16 @@ export default function App() {
                                     </span>
                                     <span>{item.details?.strikeFormatted} {item.details?.optionTypeShort}</span>
                                     <span className="text-[10px] text-muted-foreground">{item.details?.expirationFormatted}</span>
+                                    {isOpen && (
+                                      <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 text-[9px] px-1 py-0.5 rounded font-mono font-bold">
+                                        OPEN
+                                      </span>
+                                    )}
+                                    {isClose && (
+                                      <span className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[9px] px-1 py-0.5 rounded font-mono font-bold">
+                                        CLOSE
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <span className="text-muted-foreground">{<Money value={(item.currentPrice || item.price || 0)} />}</span>
@@ -2471,6 +2570,16 @@ export default function App() {
                               ) : (
                                 <span className="bg-surface-3 text-muted-foreground text-[9px] px-1.5 py-0.5 rounded font-medium border border-border">
                                   CLOSED
+                                </span>
+                              )}
+                              {activeTrade.isOpeningLeg && activeTrade.closingTrade && (
+                                <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 text-[9px] px-1.5 py-0.5 rounded font-bold font-mono">
+                                  OPEN ORDER
+                                </span>
+                              )}
+                              {activeTrade.isClosingLeg && (
+                                <span className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[9px] px-1.5 py-0.5 rounded font-bold font-mono">
+                                  CLOSE ORDER
                                 </span>
                               )}
                             </div>
@@ -2528,6 +2637,151 @@ export default function App() {
                             }`}>
                               {activeTrade.details.action}
                             </span>
+                          </div>
+
+                          {/* Quick Link Navigation between Opening & Closing Orders */}
+                          {activeTrade.isOpeningLeg && activeTrade.closingTrade && (
+                            <div className="mt-2.5 pt-2 border-t border-border flex items-center justify-between text-[11px]">
+                              <span className="text-muted-foreground">Closed on {formatTradeDateTime(activeTrade.closingTrade.date)}</span>
+                              <button
+                                onClick={() => setActiveTradeId(activeTrade.closingTrade!.id)}
+                                className="text-brand hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                              >
+                                <span>View Closing Order ({activeTrade.closingTrade.details?.action || 'BTC'})</span>
+                                <ArrowRight className="w-3 h-3" />
+                              </button>
+                            </div>
+                          )}
+                          {activeTrade.isClosingLeg && activeTrade.openingTrade && (
+                            <div className="mt-2.5 pt-2 border-t border-border flex items-center justify-between text-[11px]">
+                              <span className="text-muted-foreground">Opened on {formatTradeDateTime(activeTrade.openingTrade.date)}</span>
+                              <button
+                                onClick={() => setActiveTradeId(activeTrade.openingTrade!.id)}
+                                className="text-brand hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                              >
+                                <span>← View Opening Order ({activeTrade.openingTrade.details?.action || 'STO'})</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Completed Trade Lifecycle (Round-Trip) Card */}
+                      {linkedRoundTrip && (
+                        <div className="bg-surface-2 border border-brand/30 rounded-xl p-3.5 mb-4 font-sans shadow-sm">
+                          <div className="flex items-center justify-between text-xs mb-3 border-b border-border/80 pb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
+                              <span className="font-bold text-foreground">Completed Trade Lifecycle</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 font-mono text-[11px]">
+                              <span className="text-muted-foreground">Round-Trip:</span>
+                              <span className={`font-bold ${(linkedRoundTrip.opener.roundTripProfit ?? 0) >= 0 ? 'text-profit' : 'text-loss'}`}>
+                                <PnL value={linkedRoundTrip.opener.roundTripProfit ?? (
+                                  (linkedRoundTrip.opener.netValue ?? 0) + (linkedRoundTrip.closer.netValue ?? 0)
+                                )} />
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Timeline: Open -> Duration -> Close */}
+                          <div className="relative pl-6 space-y-3 before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
+                            {/* 1. Opening Order */}
+                            <div className="relative">
+                              <div className="absolute -left-6 top-1 w-2.5 h-2.5 rounded-full bg-sky-400 ring-4 ring-surface-2"></div>
+                              <div className="flex items-start justify-between">
+                                <div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="bg-sky-500/15 text-sky-400 border border-sky-500/30 text-[10px] font-bold px-1.5 py-0.5 rounded font-mono">
+                                      {linkedRoundTrip.opener.details?.action || 'OPEN'} {linkedRoundTrip.opener.quantity}
+                                    </span>
+                                    <span className="text-xs font-semibold text-foreground">
+                                      @ <Money value={linkedRoundTrip.opener.price || 0} />
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                                    {formatTradeDateTime(linkedRoundTrip.opener.date)}
+                                  </div>
+                                </div>
+                                <div className="text-right font-mono text-xs">
+                                  <span className={linkedRoundTrip.opener.netValue && linkedRoundTrip.opener.netValue > 0 ? 'text-profit' : 'text-foreground'}>
+                                    {linkedRoundTrip.opener.netValue !== undefined ? (
+                                      linkedRoundTrip.opener.netValue > 0 ? `+${formatMoney(linkedRoundTrip.opener.netValue)}` : formatMoney(linkedRoundTrip.opener.netValue)
+                                    ) : (
+                                      formatMoney(linkedRoundTrip.opener.price * linkedRoundTrip.opener.quantity * (linkedRoundTrip.opener.details?.multiplier || 1))
+                                    )}
+                                  </span>
+                                  {linkedRoundTrip.opener.fees ? (
+                                    <div className="text-[10px] text-muted-foreground">
+                                      fee: -{formatMoney(linkedRoundTrip.opener.fees)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Duration Badge */}
+                            <div className="relative py-0.5">
+                              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-surface-3 border border-border text-[10px] font-mono text-muted-foreground">
+                                <Clock className="w-3 h-3 text-brand" />
+                                <span>{linkedRoundTrip.opener.holdingDays || 1} {(linkedRoundTrip.opener.holdingDays || 1) === 1 ? 'day' : 'days'} held</span>
+                              </div>
+                            </div>
+
+                            {/* 2. Closing Order */}
+                            <div className="relative">
+                              <div className="absolute -left-6 top-1 w-2.5 h-2.5 rounded-full bg-emerald-400 ring-4 ring-surface-2"></div>
+                              <div className="flex items-start justify-between">
+                                <div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 text-[10px] font-bold px-1.5 py-0.5 rounded font-mono">
+                                      {linkedRoundTrip.closer.details?.action || 'CLOSE'} {linkedRoundTrip.closer.quantity}
+                                    </span>
+                                    <span className="text-xs font-semibold text-foreground">
+                                      @ <Money value={linkedRoundTrip.closer.price || 0} />
+                                    </span>
+                                  </div>
+                                  <div className="text-[11px] text-muted-foreground mt-0.5">
+                                    {formatTradeDateTime(linkedRoundTrip.closer.date)}
+                                  </div>
+                                </div>
+                                <div className="text-right font-mono text-xs">
+                                  <span className={linkedRoundTrip.closer.netValue && linkedRoundTrip.closer.netValue < 0 ? 'text-loss' : 'text-foreground'}>
+                                    {linkedRoundTrip.closer.netValue !== undefined ? (
+                                      formatMoney(linkedRoundTrip.closer.netValue)
+                                    ) : (
+                                      formatMoney(-linkedRoundTrip.closer.price * linkedRoundTrip.closer.quantity * (linkedRoundTrip.closer.details?.multiplier || 1))
+                                    )}
+                                  </span>
+                                  {linkedRoundTrip.closer.fees ? (
+                                    <div className="text-[10px] text-muted-foreground">
+                                      fee: -{formatMoney(linkedRoundTrip.closer.fees)}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Round-Trip Summary Footer */}
+                          <div className="mt-3 pt-2.5 border-t border-border/80 flex items-center justify-between text-xs">
+                            <div className="text-muted-foreground text-[11px]">
+                              Total Fees: <span className="font-mono text-foreground font-medium">-{formatMoney(linkedRoundTrip.opener.roundTripFees || (linkedRoundTrip.opener.fees || 0) + (linkedRoundTrip.closer.fees || 0))}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {inspectorMode === 'leg' && (
+                                <button
+                                  onClick={() => {
+                                    const targetId = activeTrade.id === linkedRoundTrip.opener.id ? linkedRoundTrip.closer.id : linkedRoundTrip.opener.id;
+                                    setActiveTradeId(targetId);
+                                  }}
+                                  className="text-[11px] text-brand hover:underline font-medium flex items-center gap-1 cursor-pointer"
+                                >
+                                  <span>{activeTrade.id === linkedRoundTrip.opener.id ? 'View Closing Leg' : 'View Opening Leg'}</span>
+                                  <ArrowRight className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       )}
@@ -2689,14 +2943,28 @@ export default function App() {
                               <span>${(activeMetrics.avgCapital || activeTrade.requiredCapital || 0).toFixed(2)}</span>
                             </div>
                             <div className="flex justify-between">
-                              <span className="text-muted-foreground font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : 'Net Cash Flow / P&L:'}</span>
+                              <span className="text-muted-foreground font-sans">{activeTrade.status === 'Open' ? 'Unrealized Gain/Loss:' : activeTrade.roundTripProfit !== undefined ? 'Order Cash Flow:' : 'Net Cash Flow / P&L:'}</span>
                               <span className={(activeMetrics.profit || 0) >= 0 ? 'text-profit font-bold' : 'text-loss font-bold'}>
                                 <PnL value={activeMetrics.profit || 0} />
                               </span>
                             </div>
+                            {activeTrade.roundTripProfit !== undefined && (
+                              <div className="flex justify-between text-brand font-semibold">
+                                <span className="text-muted-foreground font-sans">Round-Trip Realized Profit:</span>
+                                <span className={activeTrade.roundTripProfit >= 0 ? 'text-profit font-bold' : 'text-loss font-bold'}>
+                                  <PnL value={activeTrade.roundTripProfit} />
+                                </span>
+                              </div>
+                            )}
+                            {activeTrade.roundTripFees !== undefined && activeTrade.roundTripFees > 0 && (
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground font-sans">Round-Trip Total Fees:</span>
+                                <span className="text-muted-foreground">-{<Money value={activeTrade.roundTripFees} />}</span>
+                              </div>
+                            )}
                             <div className="flex justify-between border-t border-border/60 pt-2">
-                              <span className="text-muted-foreground font-sans">Holding Period:</span>
-                              <span className="text-foreground">{activeMetrics.daysHeld || 1} {(activeMetrics.daysHeld || 1) === 1 ? 'day' : 'days'}</span>
+                              <span className="text-muted-foreground font-sans">{activeTrade.roundTripProfit !== undefined ? 'Round-Trip Holding Period:' : 'Holding Period:'}</span>
+                              <span className="text-foreground">{activeTrade.holdingDays || activeMetrics.daysHeld || 1} {(activeTrade.holdingDays || activeMetrics.daysHeld || 1) === 1 ? 'day' : 'days'}</span>
                             </div>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground font-sans">Annualized ROI:</span>

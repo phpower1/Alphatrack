@@ -1007,7 +1007,24 @@ export function groupItemsByTastyStrategy<T extends {
       let hasAnyActionDate = false;
 
       for (const item of expItems) {
-        const ad = item.details?.actionDate || (item as any).date?.slice(0, 10) || '';
+        // If an item is a closing leg linked to an opening trade, group it with the opener's action date
+        const linkedOpener = (item as any).openingTrade ||
+          ((item as any).isClosingLeg && (item as any).linkedTradeId
+            ? expItems.find((o: any) => o.id === (item as any).linkedTradeId)
+            : undefined) ||
+          ((item.details?.action === 'BTC' || item.details?.action === 'STC')
+            ? expItems.find((o: any) =>
+                (o.details?.action === 'STO' || o.details?.action === 'BTO') &&
+                o.details?.strike === item.details?.strike &&
+                o.details?.optionType === item.details?.optionType &&
+                (!o.details?.futureCycle || o.details?.futureCycle === item.details?.futureCycle)
+              )
+            : undefined);
+
+        const ad = linkedOpener
+          ? (linkedOpener.details?.actionDate || (linkedOpener as any).date?.slice(0, 10) || '')
+          : (item.details?.actionDate || (item as any).date?.slice(0, 10) || '');
+
         if (ad) hasAnyActionDate = true;
         const adKey = ad || '__NO_DATE__';
         if (!byActionDate[adKey]) {
@@ -1024,8 +1041,12 @@ export function groupItemsByTastyStrategy<T extends {
         : [expItems];
 
       for (const bucketItems of subBuckets) {
-        // Sort legs within strategy: by strike descending, then by trade date descending
+        // Sort legs within strategy: openers first, then by strike descending, then by trade date descending
         bucketItems.sort((a, b) => {
+          const aIsClose = (a as any).isClosingLeg || (a as any).details?.action === 'BTC' || (a as any).details?.action === 'STC' ? 1 : 0;
+          const bIsClose = (b as any).isClosingLeg || (b as any).details?.action === 'BTC' || (b as any).details?.action === 'STC' ? 1 : 0;
+          if (aIsClose !== bIsClose) return aIsClose - bIsClose;
+
           const sA = a.details?.strike ?? 0;
           const sB = b.details?.strike ?? 0;
           if (sA !== sB) return sB - sA;

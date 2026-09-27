@@ -159,6 +159,16 @@ export function buildTradeColumns(
           <span className="font-mono text-[11px] text-muted-foreground tabular-nums">
             {trade.quantity}
           </span>
+          {trade.isOpeningLeg && trade.closingTrade && (
+            <span className="rounded bg-sky-500/15 px-1 py-0.5 font-mono text-[9px] font-bold text-sky-400 ring-1 ring-sky-500/30" title="Opening order of completed trade">
+              OPEN
+            </span>
+          )}
+          {trade.isClosingLeg && (
+            <span className="rounded bg-emerald-500/15 px-1 py-0.5 font-mono text-[9px] font-bold text-emerald-400 ring-1 ring-emerald-500/30" title="Closing order of completed trade">
+              CLOSE
+            </span>
+          )}
           {mode === 'flat' && trade.status === 'Open' && (
             <span className="rounded bg-profit/20 px-1.5 py-0.5 text-[9px] font-bold text-profit ring-1 ring-profit/40">
               OPEN
@@ -167,11 +177,23 @@ export function buildTradeColumns(
         </div>
       ),
       underlyingCell: () => <Dash />,
-      strategyCell: (group) => (
-        <span className="font-mono text-xs font-semibold text-muted-foreground tabular-nums">
-          {group.items.length} legs
-        </span>
-      ),
+      strategyCell: (group) => {
+        const openers = group.items.filter((i: any) => !i.isClosingLeg && (i.details?.action !== 'BTC' && i.details?.action !== 'STC'));
+        const hasClosingLegs = group.items.some((i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC');
+        const legCount = openers.length > 0 ? openers.length : group.items.length;
+        return (
+          <div className="flex items-center gap-1.5">
+            <span className="font-mono text-xs font-semibold text-muted-foreground tabular-nums">
+              {legCount} {legCount === 1 ? 'leg' : 'legs'}
+            </span>
+            {hasClosingLegs && (
+              <span className="rounded bg-brand/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-brand ring-1 ring-brand/30">
+                Closed
+              </span>
+            )}
+          </div>
+        );
+      },
     },
 
     {
