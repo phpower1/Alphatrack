@@ -693,7 +693,7 @@ export default function App() {
                 date: tradeDate,
                 status: status,
                 closePrice: null,
-                closeDate: status === 'Closed' ? tradeDate : null,
+                closeDate: status === 'Closed' ? (details.expirationDate || tradeDate) : null,
                 requiredCapital: reqCapital,
                 peakCapital: peakCapital,
                 fees: details.fees || 0,
@@ -1037,7 +1037,7 @@ export default function App() {
                   date: tradeDate,
                   status: status,
                   closePrice: null,
-                  closeDate: status === 'Closed' ? tradeDate : null,
+                  closeDate: status === 'Closed' ? (details.expirationDate || tradeDate) : null,
                   requiredCapital: reqCapital,
                   peakCapital: peakCapital,
                   fees: details.fees || 0,
@@ -1333,10 +1333,8 @@ export default function App() {
         }
       }
 
-      // 3. Fallback: if it expired (no explicit closeDate), compute days between trade entry and expirationDate
-      // Only use this when the trade has no closeDate — meaning it likely expired/was assigned
-      // rather than being explicitly closed early (e.g., bought back same day).
-      if (days === 1 && !trade.closeDate && trade.details?.expirationDate && trade.date) {
+      // 3. Fallback: if it expired, compute days between trade entry and expirationDate
+      if (days === 1 && (!trade.closeDate || trade.closeDate === trade.date) && trade.details?.expirationDate && trade.date) {
         try {
           const expDate = parseISO(trade.details.expirationDate);
           const trDate = parseISO(trade.date);
@@ -1665,9 +1663,7 @@ export default function App() {
     if (stratDaysHeld === 1) {
       if (maxDaysHeld > 1) {
         stratDaysHeld = maxDaysHeld;
-      } else if (hasOpenLeg && strategy.expirationDate && itemDates.length > 0) {
-        // Only fall back to expiration date for strategies that are still open.
-        // Closed strategies that were exited early should keep their actual holding span.
+      } else if (strategy.expirationDate && itemDates.length > 0) {
         try {
           const expT = parseISO(strategy.expirationDate).getTime();
           const minDate = Math.min(...itemDates);
@@ -1676,10 +1672,8 @@ export default function App() {
             stratDaysHeld = spanExp;
           }
         } catch {}
-      } else if (hasOpenLeg && strategy.dte !== undefined && strategy.daysLeft !== undefined) {
-        // Only use DTE-based fallback for open strategies — for closed strategies,
-        // dte minus daysLeft gives "days since entry to today", not actual holding period.
-        const spanDte = strategy.dte - strategy.daysLeft;
+      } else if (strategy.dte !== undefined && strategy.daysLeft !== undefined) {
+        const spanDte = strategy.dte - Math.max(0, strategy.daysLeft);
         if (spanDte > 0) stratDaysHeld = spanDte;
       }
     }

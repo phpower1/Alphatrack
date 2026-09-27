@@ -720,7 +720,7 @@ export function isTradeActivity(act: any): boolean {
 
 export interface StrategyGroupInfo {
   strategyName: string;
-  strategyType: 'Ratio' | 'Vertical' | 'Iron Condor' | 'Iron Fly' | 'Strangle' | 'Straddle' | 'Calendar' | 'Diagonal' | 'Butterfly' | 'Single' | 'Stock' | 'Custom';
+  strategyType: 'Ratio' | 'Vertical' | 'Iron Condor' | 'Iron Fly' | 'Strangle' | 'Straddle' | 'Calendar' | 'Diagonal' | 'Butterfly' | 'Jade Lizard' | 'Single' | 'Stock' | 'Custom';
 }
 
 /**
@@ -844,9 +844,11 @@ export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quan
       } else {
         // 1 Call + 1 Put
         if (leg1.strike && leg2.strike && leg1.strike === leg2.strike) {
-          return { strategyName: 'Straddle', strategyType: 'Straddle' };
+          const isShort = (q1 < 0 && q2 < 0) || (leg1.hasSTO && leg2.hasSTO);
+          return { strategyName: isShort ? 'Short Straddle' : 'Straddle', strategyType: 'Straddle' };
         } else {
-          return { strategyName: 'Strangle', strategyType: 'Strangle' };
+          const isShort = (q1 < 0 && q2 < 0) || (leg1.hasSTO && leg2.hasSTO);
+          return { strategyName: isShort ? 'Short Strangle' : 'Strangle', strategyType: 'Strangle' };
         }
       }
     } else {
@@ -862,6 +864,30 @@ export function detectOptionStrategy(legs: { details?: ParsedOptionDetails; quan
   if (uniqueContracts.length === 3) {
     if (strikes.length === 3 && (calls.length === 3 || puts.length === 3)) {
       return { strategyName: 'Butterfly', strategyType: 'Butterfly' };
+    }
+    // Jade Lizard: 1 short Put + 1 Call Credit Spread (short Call lower strike + long Call higher strike)
+    if (calls.length === 2 && puts.length === 1) {
+      const put = puts[0];
+      const isShortPut = put.signedQuantity < 0 || put.hasSTO;
+      const sortedCalls = [...calls].sort((a, b) => (a.strike || 0) - (b.strike || 0));
+      const shortCall = sortedCalls[0];
+      const longCall = sortedCalls[1];
+      const isCreditSpread = (shortCall.signedQuantity < 0 || shortCall.hasSTO) && (longCall.signedQuantity > 0 || longCall.hasBTO);
+      if (isShortPut && isCreditSpread) {
+        return { strategyName: 'Jade Lizard', strategyType: 'Jade Lizard' };
+      }
+    }
+    // Reverse Jade Lizard: 1 short Call + 1 Put Credit Spread (short Put higher strike + long Put lower strike)
+    if (puts.length === 2 && calls.length === 1) {
+      const call = calls[0];
+      const isShortCall = call.signedQuantity < 0 || call.hasSTO;
+      const sortedPuts = [...puts].sort((a, b) => (b.strike || 0) - (a.strike || 0));
+      const shortPut = sortedPuts[0];
+      const longPut = sortedPuts[1];
+      const isCreditSpread = (shortPut.signedQuantity < 0 || shortPut.hasSTO) && (longPut.signedQuantity > 0 || longPut.hasBTO);
+      if (isShortCall && isCreditSpread) {
+        return { strategyName: 'Reverse Jade Lizard', strategyType: 'Jade Lizard' };
+      }
     }
     return { strategyName: 'Multi-Leg (3 legs)', strategyType: 'Custom' };
   }

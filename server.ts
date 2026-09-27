@@ -375,255 +375,721 @@ const MOCK_ACCOUNTS = [
   }
 ];
 
-const MOCK_ACTIVITIES: Record<string, any[]> = {
-  "mock-acc-tasty-01": [
-    // /MNQU6 Put Ratio Spread - Aug 21 Expiration
-    {
-      id: "act-mnq-aug-1",
-      trade_date: "2026-07-27",
-      settlement_date: "2026-07-28",
-      type: "BUY_TO_OPEN",
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24800", description: "/MNQU6 Aug 21 24800 Put" },
-      option_symbol: { ticker: "260821P24800", expiration_date: "2026-08-21", strike_price: "24800", option_type: "PUT" },
-      units: 1,
-      price: 117.00,
-      amount: -234.00,
-      fee: 1.25,
-      description: "BOT +1 /MNQU6 Aug 21 24800 Put @ 117.00"
-    },
-    {
-      id: "act-mnq-aug-2",
-      trade_date: "2026-07-27",
-      settlement_date: "2026-07-28",
-      type: "SELL_TO_OPEN",
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24500", description: "/MNQU6 Aug 21 24500 Put" },
-      option_symbol: { ticker: "260821P24500", expiration_date: "2026-08-21", strike_price: "24500", option_type: "PUT" },
-      units: -2,
-      price: 93.00,
-      amount: 372.00,
-      fee: 2.50,
-      description: "SLD -2 /MNQU6 Aug 21 24500 Put @ 93.00"
-    },
-    // /MNQU6 Put Ratio Spread - Sep 18 Expiration
-    {
-      id: "act-mnq-sep-1",
-      trade_date: "2026-08-10",
-      settlement_date: "2026-08-11",
-      type: "BUY_TO_OPEN",
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P26100", description: "/MNQU6 Sep 18 26100 Put" },
-      option_symbol: { ticker: "260918P26100", expiration_date: "2026-09-18", strike_price: "26100", option_type: "PUT" },
-      units: 1,
-      price: 96.50,
-      amount: -193.00,
-      fee: 1.25,
-      required_capital: 193.00,
-      cap_req: 193.00,
-      description: "BOT +1 /MNQU6 Sep 18 26100 Put @ 96.50"
-    },
-    {
-      id: "act-mnq-sep-2",
-      trade_date: "2026-08-10",
-      settlement_date: "2026-08-11",
-      type: "SELL_TO_OPEN",
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P25800", description: "/MNQU6 Sep 18 25800 Put" },
-      option_symbol: { ticker: "260918P25800", expiration_date: "2026-09-18", strike_price: "25800", option_type: "PUT" },
-      units: -2,
-      price: 81.00,
-      amount: 324.00,
-      fee: 2.50,
-      required_capital: 1160.38,
-      cap_req: 1160.38,
-      description: "SLD -2 /MNQU6 Sep 18 25800 Put @ 81.00"
-    },
-    // /MESU6 Futures Option - Sep 18 Expiration
-    {
-      id: "act-mes-sep-1",
-      trade_date: "2026-08-11",
-      settlement_date: "2026-08-12",
-      type: "SELL_TO_OPEN",
-      symbol: { symbol: "/MESU6", raw_symbol: "/MESU6 260918P7050", description: "/MESU6 Sep 18 7050 Put" },
-      option_symbol: { ticker: "260918P7050", expiration_date: "2026-09-18", strike_price: "7050", option_type: "PUT" },
-      units: -1,
-      price: 23.75,
-      amount: 118.75,
-      fee: 1.25,
-      required_capital: 900.55,
-      cap_req: 900.55,
-      description: "SLD -1 /MESU6 Sep 18 7050 Put @ 23.75"
-    },
-    // Historical closed NVDA & TSLA trades
-    {
-      id: "act-t1",
-      trade_date: "2026-08-01",
-      settlement_date: "2026-08-03",
-      type: "BUY",
-      symbol: { symbol: "NVDA", description: "NVIDIA Corporation" },
-      units: 25,
-      price: 118.50,
-      amount: -2962.50,
-      fee: 1.00,
-      description: "BOT 25 NVDA @ 118.50"
-    },
-    {
-      id: "act-t2",
-      trade_date: "2026-08-10",
-      settlement_date: "2026-08-12",
-      type: "SELL",
-      symbol: { symbol: "NVDA", description: "NVIDIA Corporation" },
-      units: -25,
-      price: 128.20,
-      amount: 3205.00,
-      fee: 1.05,
-      description: "SLD 25 NVDA @ 128.20"
-    }
-  ],
-  "mock-acc-rh-02": [
-    {
-      id: "act-r1",
-      trade_date: "2026-07-20",
-      settlement_date: "2026-07-22",
-      type: "BUY",
-      symbol: { symbol: "AAPL", description: "Apple Inc" },
-      units: 30,
-      price: 218.00,
-      amount: -6540.00,
-      fee: 0,
-      description: "Market Buy AAPL"
-    },
-    {
-      id: "act-r2",
-      trade_date: "2026-08-08",
-      settlement_date: "2026-08-10",
-      type: "SELL",
-      symbol: { symbol: "AAPL", description: "Apple Inc" },
-      units: -30,
-      price: 226.40,
-      amount: 6792.00,
-      fee: 0.05,
-      description: "Market Sell AAPL"
-    },
-    {
-      id: "act-r3",
-      trade_date: "2026-08-02",
-      settlement_date: "2026-08-04",
-      type: "BUY",
-      symbol: { symbol: "MSFT", description: "Microsoft Corp" },
-      units: 12,
-      price: 430.00,
-      amount: -5160.00,
-      fee: 0,
-      description: "Market Buy MSFT"
-    }
-  ],
-  "mock-acc-schwab-03": [
-    {
-      id: "act-s1",
-      trade_date: "2026-06-10",
-      settlement_date: "2026-06-12",
-      type: "BUY",
-      symbol: { symbol: "QQQ", description: "Invesco QQQ Trust" },
-      units: 40,
-      price: 470.00,
-      amount: -18800.00,
-      fee: 0,
-      description: "BOUGHT 40 QQQ"
-    },
-    {
-      id: "act-s2",
-      trade_date: "2026-07-28",
-      settlement_date: "2026-07-30",
-      type: "SELL",
-      symbol: { symbol: "QQQ", description: "Invesco QQQ Trust" },
-      units: -40,
-      price: 492.50,
-      amount: 19700.00,
-      fee: 0.20,
-      description: "SOLD 40 QQQ"
-    }
-  ]
-};
+// Helper functions for dynamic realistic dates
+function getDaysOffset(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  return d.toISOString().split('T')[0];
+}
 
-const MOCK_POSITIONS: Record<string, any[]> = {
-  "mock-acc-tasty-01": [
-    // /MNQU6 Aug 21 Put Ratio Spread
-    {
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24500", description: "/MNQU6 Aug 21 24500 Put" },
-      option_symbol: { ticker: "260821P24500", expiration_date: "2026-08-21", strike_price: "24500", option_type: "PUT" },
-      units: -2,
-      price: 5.68,
-      average_purchase_price: 93.00,
-      open_pnl: 365.52
-    },
-    {
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260821P24800", description: "/MNQU6 Aug 21 24800 Put" },
-      option_symbol: { ticker: "260821P24800", expiration_date: "2026-08-21", strike_price: "24800", option_type: "PUT" },
-      units: 1,
-      price: 2.89,
-      average_purchase_price: 117.00,
-      open_pnl: -230.71
-    },
-    // /MNQU6 Sep 18 Put Ratio Spread
-    {
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P25800", description: "/MNQU6 Sep 18 25800 Put" },
-      option_symbol: { ticker: "260918P25800", expiration_date: "2026-09-18", strike_price: "25800", option_type: "PUT" },
-      units: -2,
-      price: 18.79,
-      average_purchase_price: 81.00,
-      cost_basis: 324.00,
-      open_pnl: 125.79,
-      cap_req: 1160.38,
-      required_capital: 1160.38
-    },
-    {
-      symbol: { symbol: "/MNQU6", raw_symbol: "/MNQU6 260918P26100", description: "/MNQU6 Sep 18 26100 Put" },
-      option_symbol: { ticker: "260918P26100", expiration_date: "2026-09-18", strike_price: "26100", option_type: "PUT" },
-      units: 1,
-      price: 58.90,
-      average_purchase_price: 96.50,
-      cost_basis: -193.00,
-      open_pnl: -75.44,
-      cap_req: 0,
-      required_capital: 193.00
-    },
-    // /MESU6 Sep 18 Futures Option
-    {
-      symbol: { symbol: "/MESU6", raw_symbol: "/MESU6 260918P7050", description: "/MESU6 Sep 18 7050 Put" },
-      option_symbol: { ticker: "260918P7050", expiration_date: "2026-09-18", strike_price: "7050", option_type: "PUT" },
-      units: -1,
-      price: 8.25,
-      average_purchase_price: 23.75,
-      cost_basis: 118.75,
-      open_pnl: 60.75,
-      cap_req: 900.55,
-      required_capital: 900.55
-    }
-  ],
-  "mock-acc-rh-02": [
-    {
-      symbol: { symbol: "MSFT", description: "Microsoft Corp" },
-      units: 12,
-      price: 442.10,
-      average_purchase_price: 430.00,
-      open_pnl: 145.20
-    },
-    {
-      symbol: { symbol: "AMZN", description: "Amazon.com Inc" },
-      units: 20,
-      price: 185.00,
-      average_purchase_price: 180.50,
-      open_pnl: 90.00
-    }
-  ],
-  "mock-acc-schwab-03": [
-    {
-      symbol: { symbol: "VOO", description: "Vanguard S&P 500 ETF" },
-      units: 110,
-      price: 512.30,
-      average_purchase_price: 485.00,
-      open_pnl: 3003.00
-    }
-  ]
-};
+function getTickerDate(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const yy = d.getFullYear().toString().slice(-2);
+  const mm = (d.getMonth() + 1).toString().padStart(2, '0');
+  const dd = d.getDate().toString().padStart(2, '0');
+  return `${yy}${mm}${dd}`;
+}
+
+function getFormattedExp(offsetDays: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const m = d.toLocaleDateString('en-US', { month: 'short' });
+  const day = d.getDate();
+  return `${m} ${day}`;
+}
+
+export function getMockActivities(accountId: string): any[] {
+  if (accountId === "mock-acc-tasty-01") {
+    // Dynamic dates:
+    // Open Trades: entered 5 to 10 days ago, expiring in 18 to 25 days (entry DTE 26-30d, current DTE 18-25d)
+    const mesOpenDate = getDaysOffset(-10);
+    const mesExpDate = getDaysOffset(18);
+    const mesTicker = getTickerDate(18);
+    const mesExpFmt = getFormattedExp(18);
+
+    const strangleOpenDate = getDaysOffset(-7);
+    const strangleExpDate = getDaysOffset(21);
+    const strangleTicker = getTickerDate(21);
+    const strangleExpFmt = getFormattedExp(21);
+
+    const lizardOpenDate = getDaysOffset(-9);
+    const lizardExpDate = getDaysOffset(19);
+    const lizardTicker = getTickerDate(19);
+    const lizardExpFmt = getFormattedExp(19);
+
+    const ratioOpenDate = getDaysOffset(-5);
+    const ratioExpDate = getDaysOffset(25);
+    const ratioTicker = getTickerDate(25);
+    const ratioExpFmt = getFormattedExp(25);
+
+    // Closed Trades: opened 38 to 50 days ago, expiring 12 to 24 days ago (entry DTE 25-28d),
+    // closed 1 to 2 days before expiration (holding period 23-26 days!)
+    const cMesOpen = getDaysOffset(-42);
+    const cMesExp = getDaysOffset(-14);
+    const cMesClose = getDaysOffset(-16);
+    const cMesTicker = getTickerDate(-14);
+    const cMesExpFmt = getFormattedExp(-14);
+
+    const cStrangleOpen = getDaysOffset(-38);
+    const cStrangleExp = getDaysOffset(-12);
+    const cStrangleClose = getDaysOffset(-14);
+    const cStrangleTicker = getTickerDate(-12);
+    const cStrangleExpFmt = getFormattedExp(-12);
+
+    const cLizardOpen = getDaysOffset(-50);
+    const cLizardExp = getDaysOffset(-24);
+    const cLizardClose = getDaysOffset(-25);
+    const cLizardTicker = getTickerDate(-24);
+    const cLizardExpFmt = getFormattedExp(-24);
+
+    const cRatioOpen = getDaysOffset(-46);
+    const cRatioExp = getDaysOffset(-21);
+    const cRatioClose = getDaysOffset(-23);
+    const cRatioTicker = getTickerDate(-21);
+    const cRatioExpFmt = getFormattedExp(-21);
+
+    const cStockOpen = getDaysOffset(-40);
+    const cStockClose = getDaysOffset(-15);
+
+    return [
+      // ── OPEN STRATEGIES ──────────────────────────────────────
+      // 1. /MESZ6 Short Put (Short Fut Option) — 18 DTE left, entered 10d ago (28 DTE entry)
+      {
+        id: "act-mes-open-1",
+        trade_date: mesOpenDate,
+        settlement_date: getDaysOffset(-9),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "/MESZ6", raw_symbol: `/MESZ6 ${mesTicker}P7050`, description: `/MESZ6 ${mesExpFmt} 7050 Put` },
+        option_symbol: { ticker: `${mesTicker}P7050`, expiration_date: mesExpDate, strike_price: "7050", option_type: "PUT" },
+        units: -1,
+        price: 26.50,
+        amount: 132.50,
+        fee: 1.25,
+        required_capital: 920.00,
+        cap_req: 920.00,
+        description: `SLD -1 /MESZ6 ${mesExpFmt} 7050 Put @ 26.50`
+      },
+
+      // 2. /MNQZ6 Short Strangle (2 legs) — 21 DTE left, entered 7d ago (28 DTE entry)
+      {
+        id: "act-mnq-strangle-put",
+        trade_date: strangleOpenDate,
+        settlement_date: getDaysOffset(-6),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${strangleTicker}P25400`, description: `/MNQZ6 ${strangleExpFmt} 25400 Put` },
+        option_symbol: { ticker: `${strangleTicker}P25400`, expiration_date: strangleExpDate, strike_price: "25400", option_type: "PUT" },
+        units: -1,
+        price: 86.00,
+        amount: 172.00,
+        fee: 1.25,
+        required_capital: 1480.00,
+        cap_req: 1480.00,
+        description: `SLD -1 /MNQZ6 ${strangleExpFmt} 25400 Put @ 86.00`
+      },
+      {
+        id: "act-mnq-strangle-call",
+        trade_date: strangleOpenDate,
+        settlement_date: getDaysOffset(-6),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${strangleTicker}C26800`, description: `/MNQZ6 ${strangleExpFmt} 26800 Call` },
+        option_symbol: { ticker: `${strangleTicker}C26800`, expiration_date: strangleExpDate, strike_price: "26800", option_type: "CALL" },
+        units: -1,
+        price: 72.00,
+        amount: 144.00,
+        fee: 1.25,
+        required_capital: 0,
+        cap_req: 0,
+        description: `SLD -1 /MNQZ6 ${strangleExpFmt} 26800 Call @ 72.00`
+      },
+
+      // 3. NVDA Jade Lizard (3 legs: Short Put + Call Credit Spread) — 19 DTE left, entered 9d ago (28 DTE entry)
+      {
+        id: "act-nvda-lizard-put",
+        trade_date: lizardOpenDate,
+        settlement_date: getDaysOffset(-8),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "NVDA", raw_symbol: `NVDA ${lizardTicker}P115`, description: `NVDA ${lizardExpFmt} 115 Put` },
+        option_symbol: { ticker: `NVDA${lizardTicker}P115`, expiration_date: lizardExpDate, strike_price: "115", option_type: "PUT" },
+        units: -1,
+        price: 3.60,
+        amount: 360.00,
+        fee: 1.00,
+        required_capital: 1650.00,
+        cap_req: 1650.00,
+        description: `SLD -1 NVDA ${lizardExpFmt} 115 Put @ 3.60`
+      },
+      {
+        id: "act-nvda-lizard-shortcall",
+        trade_date: lizardOpenDate,
+        settlement_date: getDaysOffset(-8),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "NVDA", raw_symbol: `NVDA ${lizardTicker}C135`, description: `NVDA ${lizardExpFmt} 135 Call` },
+        option_symbol: { ticker: `NVDA${lizardTicker}C135`, expiration_date: lizardExpDate, strike_price: "135", option_type: "CALL" },
+        units: -1,
+        price: 2.90,
+        amount: 290.00,
+        fee: 1.00,
+        required_capital: 0,
+        cap_req: 0,
+        description: `SLD -1 NVDA ${lizardExpFmt} 135 Call @ 2.90`
+      },
+      {
+        id: "act-nvda-lizard-longcall",
+        trade_date: lizardOpenDate,
+        settlement_date: getDaysOffset(-8),
+        type: "BUY_TO_OPEN",
+        symbol: { symbol: "NVDA", raw_symbol: `NVDA ${lizardTicker}C140`, description: `NVDA ${lizardExpFmt} 140 Call` },
+        option_symbol: { ticker: `NVDA${lizardTicker}C140`, expiration_date: lizardExpDate, strike_price: "140", option_type: "CALL" },
+        units: 1,
+        price: 1.15,
+        amount: -115.00,
+        fee: 1.00,
+        required_capital: 115.00,
+        cap_req: 115.00,
+        description: `BOT +1 NVDA ${lizardExpFmt} 140 Call @ 1.15`
+      },
+
+      // 4. /MNQZ6 Put Ratio Spread (2 legs: +1 / -2) — 25 DTE left, entered 5d ago (30 DTE entry)
+      {
+        id: "act-mnq-ratio-long",
+        trade_date: ratioOpenDate,
+        settlement_date: getDaysOffset(-4),
+        type: "BUY_TO_OPEN",
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${ratioTicker}P26200`, description: `/MNQZ6 ${ratioExpFmt} 26200 Put` },
+        option_symbol: { ticker: `${ratioTicker}P26200`, expiration_date: ratioExpDate, strike_price: "26200", option_type: "PUT" },
+        units: 1,
+        price: 95.00,
+        amount: -190.00,
+        fee: 1.25,
+        required_capital: 190.00,
+        cap_req: 190.00,
+        description: `BOT +1 /MNQZ6 ${ratioExpFmt} 26200 Put @ 95.00`
+      },
+      {
+        id: "act-mnq-ratio-short",
+        trade_date: ratioOpenDate,
+        settlement_date: getDaysOffset(-4),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${ratioTicker}P25800`, description: `/MNQZ6 ${ratioExpFmt} 25800 Put` },
+        option_symbol: { ticker: `${ratioTicker}P25800`, expiration_date: ratioExpDate, strike_price: "25800", option_type: "PUT" },
+        units: -2,
+        price: 82.00,
+        amount: 328.00,
+        fee: 2.50,
+        required_capital: 1220.00,
+        cap_req: 1220.00,
+        description: `SLD -2 /MNQZ6 ${ratioExpFmt} 25800 Put @ 82.00`
+      },
+
+      // ── CLOSED STRATEGIES (Held close to expiration, 23 to 26 days held!) ───
+      // 5. Closed /MESU6 Short Fut Option — Held 26 days (entry DTE 28d, closed at 2 DTE)
+      {
+        id: "act-mes-closed-open",
+        trade_date: cMesOpen,
+        settlement_date: getDaysOffset(-41),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "/MESU6", raw_symbol: `/MESU6 ${cMesTicker}P6950`, description: `/MESU6 ${cMesExpFmt} 6950 Put` },
+        option_symbol: { ticker: `${cMesTicker}P6950`, expiration_date: cMesExp, strike_price: "6950", option_type: "PUT" },
+        units: -1,
+        price: 25.00,
+        amount: 125.00,
+        fee: 1.25,
+        required_capital: 910.00,
+        cap_req: 910.00,
+        description: `SLD -1 /MESU6 ${cMesExpFmt} 6950 Put @ 25.00`
+      },
+      {
+        id: "act-mes-closed-btc",
+        trade_date: cMesClose,
+        settlement_date: getDaysOffset(-15),
+        type: "BUY_TO_CLOSE",
+        symbol: { symbol: "/MESU6", raw_symbol: `/MESU6 ${cMesTicker}P6950`, description: `/MESU6 ${cMesExpFmt} 6950 Put` },
+        option_symbol: { ticker: `${cMesTicker}P6950`, expiration_date: cMesExp, strike_price: "6950", option_type: "PUT" },
+        units: 1,
+        price: 3.50,
+        amount: -17.50,
+        fee: 1.25,
+        description: `BOT +1 /MESU6 ${cMesExpFmt} 6950 Put @ 3.50`
+      },
+
+      // 6. Closed SPY Short Strangle (2 legs) — Held 24 days (entry DTE 26d, closed at 2 DTE)
+      {
+        id: "act-spy-strangle-put-open",
+        trade_date: cStrangleOpen,
+        settlement_date: getDaysOffset(-37),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "SPY", raw_symbol: `SPY ${cStrangleTicker}P540`, description: `SPY ${cStrangleExpFmt} 540 Put` },
+        option_symbol: { ticker: `SPY${cStrangleTicker}P540`, expiration_date: cStrangleExp, strike_price: "540", option_type: "PUT" },
+        units: -1,
+        price: 4.10,
+        amount: 410.00,
+        fee: 1.00,
+        required_capital: 1800.00,
+        cap_req: 1800.00,
+        description: `SLD -1 SPY ${cStrangleExpFmt} 540 Put @ 4.10`
+      },
+      {
+        id: "act-spy-strangle-put-btc",
+        trade_date: cStrangleClose,
+        settlement_date: getDaysOffset(-13),
+        type: "BUY_TO_CLOSE",
+        symbol: { symbol: "SPY", raw_symbol: `SPY ${cStrangleTicker}P540`, description: `SPY ${cStrangleExpFmt} 540 Put` },
+        option_symbol: { ticker: `SPY${cStrangleTicker}P540`, expiration_date: cStrangleExp, strike_price: "540", option_type: "PUT" },
+        units: 1,
+        price: 0.45,
+        amount: -45.00,
+        fee: 1.00,
+        description: `BOT +1 SPY ${cStrangleExpFmt} 540 Put @ 0.45`
+      },
+      {
+        id: "act-spy-strangle-call-open",
+        trade_date: cStrangleOpen,
+        settlement_date: getDaysOffset(-37),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "SPY", raw_symbol: `SPY ${cStrangleTicker}C575`, description: `SPY ${cStrangleExpFmt} 575 Call` },
+        option_symbol: { ticker: `SPY${cStrangleTicker}C575`, expiration_date: cStrangleExp, strike_price: "575", option_type: "CALL" },
+        units: -1,
+        price: 3.80,
+        amount: 380.00,
+        fee: 1.00,
+        required_capital: 1400.00,
+        cap_req: 1400.00,
+        description: `SLD -1 SPY ${cStrangleExpFmt} 575 Call @ 3.80`
+      },
+      {
+        id: "act-spy-strangle-call-btc",
+        trade_date: cStrangleClose,
+        settlement_date: getDaysOffset(-13),
+        type: "BUY_TO_CLOSE",
+        symbol: { symbol: "SPY", raw_symbol: `SPY ${cStrangleTicker}C575`, description: `SPY ${cStrangleExpFmt} 575 Call` },
+        option_symbol: { ticker: `SPY${cStrangleTicker}C575`, expiration_date: cStrangleExp, strike_price: "575", option_type: "CALL" },
+        units: 1,
+        price: 1.90,
+        amount: -190.00,
+        fee: 1.00,
+        description: `BOT +1 SPY ${cStrangleExpFmt} 575 Call @ 1.90`
+      },
+
+      // 7. Closed TSLA Jade Lizard (3 legs) — Held 25 days (entry DTE 26d, closed at 1 DTE)
+      {
+        id: "act-tsla-lizard-put-open",
+        trade_date: cLizardOpen,
+        settlement_date: getDaysOffset(-49),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "TSLA", raw_symbol: `TSLA ${cLizardTicker}P205`, description: `TSLA ${cLizardExpFmt} 205 Put` },
+        option_symbol: { ticker: `TSLA${cLizardTicker}P205`, expiration_date: cLizardExp, strike_price: "205", option_type: "PUT" },
+        units: -1,
+        price: 5.20,
+        amount: 520.00,
+        fee: 1.00,
+        required_capital: 2400.00,
+        cap_req: 2400.00,
+        description: `SLD -1 TSLA ${cLizardExpFmt} 205 Put @ 5.20`
+      },
+      {
+        id: "act-tsla-lizard-put-btc",
+        trade_date: cLizardClose,
+        settlement_date: getDaysOffset(-24),
+        type: "BUY_TO_CLOSE",
+        symbol: { symbol: "TSLA", raw_symbol: `TSLA ${cLizardTicker}P205`, description: `TSLA ${cLizardExpFmt} 205 Put` },
+        option_symbol: { ticker: `TSLA${cLizardTicker}P205`, expiration_date: cLizardExp, strike_price: "205", option_type: "PUT" },
+        units: 1,
+        price: 0.35,
+        amount: -35.00,
+        fee: 1.00,
+        description: `BOT +1 TSLA ${cLizardExpFmt} 205 Put @ 0.35`
+      },
+      {
+        id: "act-tsla-lizard-call-open",
+        trade_date: cLizardOpen,
+        settlement_date: getDaysOffset(-49),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "TSLA", raw_symbol: `TSLA ${cLizardTicker}C245`, description: `TSLA ${cLizardExpFmt} 245 Call` },
+        option_symbol: { ticker: `TSLA${cLizardTicker}C245`, expiration_date: cLizardExp, strike_price: "245", option_type: "CALL" },
+        units: -1,
+        price: 4.10,
+        amount: 410.00,
+        fee: 1.00,
+        required_capital: 0,
+        cap_req: 0,
+        description: `SLD -1 TSLA ${cLizardExpFmt} 245 Call @ 4.10`
+      },
+      {
+        id: "act-tsla-lizard-call-btc",
+        trade_date: cLizardClose,
+        settlement_date: getDaysOffset(-24),
+        type: "BUY_TO_CLOSE",
+        symbol: { symbol: "TSLA", raw_symbol: `TSLA ${cLizardTicker}C245`, description: `TSLA ${cLizardExpFmt} 245 Call` },
+        option_symbol: { ticker: `TSLA${cLizardTicker}C245`, expiration_date: cLizardExp, strike_price: "245", option_type: "CALL" },
+        units: 1,
+        price: 0.85,
+        amount: -85.00,
+        fee: 1.00,
+        description: `BOT +1 TSLA ${cLizardExpFmt} 245 Call @ 0.85`
+      },
+      {
+        id: "act-tsla-lizard-longcall-open",
+        trade_date: cLizardOpen,
+        settlement_date: getDaysOffset(-49),
+        type: "BUY_TO_OPEN",
+        symbol: { symbol: "TSLA", raw_symbol: `TSLA ${cLizardTicker}C250`, description: `TSLA ${cLizardExpFmt} 250 Call` },
+        option_symbol: { ticker: `TSLA${cLizardTicker}C250`, expiration_date: cLizardExp, strike_price: "250", option_type: "CALL" },
+        units: 1,
+        price: 2.10,
+        amount: -210.00,
+        fee: 1.00,
+        required_capital: 210.00,
+        cap_req: 210.00,
+        description: `BOT +1 TSLA ${cLizardExpFmt} 250 Call @ 2.10`
+      },
+      {
+        id: "act-tsla-lizard-longcall-stc",
+        trade_date: cLizardClose,
+        settlement_date: getDaysOffset(-24),
+        type: "SELL_TO_CLOSE",
+        symbol: { symbol: "TSLA", raw_symbol: `TSLA ${cLizardTicker}C250`, description: `TSLA ${cLizardExpFmt} 250 Call` },
+        option_symbol: { ticker: `TSLA${cLizardTicker}C250`, expiration_date: cLizardExp, strike_price: "250", option_type: "CALL" },
+        units: -1,
+        price: 0.15,
+        amount: 15.00,
+        fee: 1.00,
+        description: `SLD -1 TSLA ${cLizardExpFmt} 250 Call @ 0.15`
+      },
+
+      // 8. Closed /MNQU6 Put Ratio Spread (2 legs: +1 / -2) — Held 23 days (entry DTE 25d, closed at 2 DTE)
+      {
+        id: "act-mnq-ratio-c-long-open",
+        trade_date: cRatioOpen,
+        settlement_date: getDaysOffset(-45),
+        type: "BUY_TO_OPEN",
+        symbol: { symbol: "/MNQU6", raw_symbol: `/MNQU6 ${cRatioTicker}P24800`, description: `/MNQU6 ${cRatioExpFmt} 24800 Put` },
+        option_symbol: { ticker: `${cRatioTicker}P24800`, expiration_date: cRatioExp, strike_price: "24800", option_type: "PUT" },
+        units: 1,
+        price: 110.00,
+        amount: -220.00,
+        fee: 1.25,
+        required_capital: 220.00,
+        cap_req: 220.00,
+        description: `BOT +1 /MNQU6 ${cRatioExpFmt} 24800 Put @ 110.00`
+      },
+      {
+        id: "act-mnq-ratio-c-long-stc",
+        trade_date: cRatioClose,
+        settlement_date: getDaysOffset(-22),
+        type: "SELL_TO_CLOSE",
+        symbol: { symbol: "/MNQU6", raw_symbol: `/MNQU6 ${cRatioTicker}P24800`, description: `/MNQU6 ${cRatioExpFmt} 24800 Put` },
+        option_symbol: { ticker: `${cRatioTicker}P24800`, expiration_date: cRatioExp, strike_price: "24800", option_type: "PUT" },
+        units: -1,
+        price: 8.00,
+        amount: 16.00,
+        fee: 1.25,
+        description: `SLD -1 /MNQU6 ${cRatioExpFmt} 24800 Put @ 8.00`
+      },
+      {
+        id: "act-mnq-ratio-c-short-open",
+        trade_date: cRatioOpen,
+        settlement_date: getDaysOffset(-45),
+        type: "SELL_TO_OPEN",
+        symbol: { symbol: "/MNQU6", raw_symbol: `/MNQU6 ${cRatioTicker}P24400`, description: `/MNQU6 ${cRatioExpFmt} 24400 Put` },
+        option_symbol: { ticker: `${cRatioTicker}P24400`, expiration_date: cRatioExp, strike_price: "24400", option_type: "PUT" },
+        units: -2,
+        price: 88.00,
+        amount: 352.00,
+        fee: 2.50,
+        required_capital: 1150.00,
+        cap_req: 1150.00,
+        description: `SLD -2 /MNQU6 ${cRatioExpFmt} 24400 Put @ 88.00`
+      },
+      {
+        id: "act-mnq-ratio-c-short-btc",
+        trade_date: cRatioClose,
+        settlement_date: getDaysOffset(-22),
+        type: "BUY_TO_CLOSE",
+        symbol: { symbol: "/MNQU6", raw_symbol: `/MNQU6 ${cRatioTicker}P24400`, description: `/MNQU6 ${cRatioExpFmt} 24400 Put` },
+        option_symbol: { ticker: `${cRatioTicker}P24400`, expiration_date: cRatioExp, strike_price: "24400", option_type: "PUT" },
+        units: 2,
+        price: 3.00,
+        amount: -12.00,
+        fee: 2.50,
+        description: `BOT +2 /MNQU6 ${cRatioExpFmt} 24400 Put @ 3.00`
+      },
+
+      // 9. Closed NVDA Equity Swing — Held 25 days (realistic swing yield)
+      {
+        id: "act-nvda-stock-buy",
+        trade_date: cStockOpen,
+        settlement_date: getDaysOffset(-38),
+        type: "BUY",
+        symbol: { symbol: "NVDA", description: "NVIDIA Corporation" },
+        units: 25,
+        price: 116.00,
+        amount: -2900.00,
+        fee: 1.00,
+        description: "BOT 25 NVDA @ 116.00"
+      },
+      {
+        id: "act-nvda-stock-sell",
+        trade_date: cStockClose,
+        settlement_date: getDaysOffset(-13),
+        type: "SELL",
+        symbol: { symbol: "NVDA", description: "NVIDIA Corporation" },
+        units: -25,
+        price: 124.50,
+        amount: 3112.50,
+        fee: 1.05,
+        description: "SLD 25 NVDA @ 124.50"
+      }
+    ];
+  }
+
+  if (accountId === "mock-acc-rh-02") {
+    const rhBuyDate = getDaysOffset(-35);
+    const rhSellDate = getDaysOffset(-12);
+    const msftBuyDate = getDaysOffset(-14);
+
+    return [
+      {
+        id: "act-r1",
+        trade_date: rhBuyDate,
+        settlement_date: getDaysOffset(-33),
+        type: "BUY",
+        symbol: { symbol: "AAPL", description: "Apple Inc" },
+        units: 30,
+        price: 218.00,
+        amount: -6540.00,
+        fee: 0,
+        description: "Market Buy AAPL"
+      },
+      {
+        id: "act-r2",
+        trade_date: rhSellDate,
+        settlement_date: getDaysOffset(-10),
+        type: "SELL",
+        symbol: { symbol: "AAPL", description: "Apple Inc" },
+        units: -30,
+        price: 228.50,
+        amount: 6855.00,
+        fee: 0.05,
+        description: "Market Sell AAPL"
+      },
+      {
+        id: "act-r3",
+        trade_date: msftBuyDate,
+        settlement_date: getDaysOffset(-12),
+        type: "BUY",
+        symbol: { symbol: "MSFT", description: "Microsoft Corp" },
+        units: 12,
+        price: 430.00,
+        amount: -5160.00,
+        fee: 0,
+        description: "Market Buy MSFT"
+      }
+    ];
+  }
+
+  if (accountId === "mock-acc-schwab-03") {
+    const schwabBuyDate = getDaysOffset(-42);
+    const schwabSellDate = getDaysOffset(-16);
+
+    return [
+      {
+        id: "act-s1",
+        trade_date: schwabBuyDate,
+        settlement_date: getDaysOffset(-40),
+        type: "BUY",
+        symbol: { symbol: "QQQ", description: "Invesco QQQ Trust" },
+        units: 40,
+        price: 472.00,
+        amount: -18880.00,
+        fee: 0,
+        description: "BOUGHT 40 QQQ"
+      },
+      {
+        id: "act-s2",
+        trade_date: schwabSellDate,
+        settlement_date: getDaysOffset(-14),
+        type: "SELL",
+        symbol: { symbol: "QQQ", description: "Invesco QQQ Trust" },
+        units: -40,
+        price: 492.00,
+        amount: 19680.00,
+        fee: 0.20,
+        description: "SOLD 40 QQQ"
+      }
+    ];
+  }
+
+  return [];
+}
+
+export function getMockPositions(accountId: string): any[] {
+  if (accountId === "mock-acc-tasty-01") {
+    const mesExpDate = getDaysOffset(18);
+    const mesTicker = getTickerDate(18);
+    const mesExpFmt = getFormattedExp(18);
+
+    const strangleExpDate = getDaysOffset(21);
+    const strangleTicker = getTickerDate(21);
+    const strangleExpFmt = getFormattedExp(21);
+
+    const lizardExpDate = getDaysOffset(19);
+    const lizardTicker = getTickerDate(19);
+    const lizardExpFmt = getFormattedExp(19);
+
+    const ratioExpDate = getDaysOffset(25);
+    const ratioTicker = getTickerDate(25);
+    const ratioExpFmt = getFormattedExp(25);
+
+    return [
+      // 1. /MESZ6 Short Put (18 DTE)
+      {
+        symbol: { symbol: "/MESZ6", raw_symbol: `/MESZ6 ${mesTicker}P7050`, description: `/MESZ6 ${mesExpFmt} 7050 Put` },
+        option_symbol: { ticker: `${mesTicker}P7050`, expiration_date: mesExpDate, strike_price: "7050", option_type: "PUT" },
+        units: -1,
+        price: 11.25,
+        average_purchase_price: 26.50,
+        cost_basis: 132.50,
+        open_pnl: 76.25,
+        multiplier: 5,
+        cap_req: 920.00,
+        required_capital: 920.00
+      },
+
+      // 2. /MNQZ6 Short Strangle (21 DTE)
+      {
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${strangleTicker}P25400`, description: `/MNQZ6 ${strangleExpFmt} 25400 Put` },
+        option_symbol: { ticker: `${strangleTicker}P25400`, expiration_date: strangleExpDate, strike_price: "25400", option_type: "PUT" },
+        units: -1,
+        price: 34.00,
+        average_purchase_price: 86.00,
+        cost_basis: 172.00,
+        open_pnl: 104.00,
+        multiplier: 2,
+        cap_req: 1480.00,
+        required_capital: 1480.00
+      },
+      {
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${strangleTicker}C26800`, description: `/MNQZ6 ${strangleExpFmt} 26800 Call` },
+        option_symbol: { ticker: `${strangleTicker}C26800`, expiration_date: strangleExpDate, strike_price: "26800", option_type: "CALL" },
+        units: -1,
+        price: 28.50,
+        average_purchase_price: 72.00,
+        cost_basis: 144.00,
+        open_pnl: 87.00,
+        multiplier: 2,
+        cap_req: 0,
+        required_capital: 0
+      },
+
+      // 3. NVDA Jade Lizard (19 DTE)
+      {
+        symbol: { symbol: "NVDA", raw_symbol: `NVDA ${lizardTicker}P115`, description: `NVDA ${lizardExpFmt} 115 Put` },
+        option_symbol: { ticker: `NVDA${lizardTicker}P115`, expiration_date: lizardExpDate, strike_price: "115", option_type: "PUT" },
+        units: -1,
+        price: 1.10,
+        average_purchase_price: 3.60,
+        cost_basis: 360.00,
+        open_pnl: 250.00,
+        multiplier: 100,
+        cap_req: 1650.00,
+        required_capital: 1650.00
+      },
+      {
+        symbol: { symbol: "NVDA", raw_symbol: `NVDA ${lizardTicker}C135`, description: `NVDA ${lizardExpFmt} 135 Call` },
+        option_symbol: { ticker: `NVDA${lizardTicker}C135`, expiration_date: lizardExpDate, strike_price: "135", option_type: "CALL" },
+        units: -1,
+        price: 1.45,
+        average_purchase_price: 2.90,
+        cost_basis: 290.00,
+        open_pnl: 145.00,
+        multiplier: 100,
+        cap_req: 0,
+        required_capital: 0
+      },
+      {
+        symbol: { symbol: "NVDA", raw_symbol: `NVDA ${lizardTicker}C140`, description: `NVDA ${lizardExpFmt} 140 Call` },
+        option_symbol: { ticker: `NVDA${lizardTicker}C140`, expiration_date: lizardExpDate, strike_price: "140", option_type: "CALL" },
+        units: 1,
+        price: 0.40,
+        average_purchase_price: 1.15,
+        cost_basis: -115.00,
+        open_pnl: -75.00,
+        multiplier: 100,
+        cap_req: 115.00,
+        required_capital: 115.00
+      },
+
+      // 4. /MNQZ6 Put Ratio Spread (25 DTE)
+      {
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${ratioTicker}P26200`, description: `/MNQZ6 ${ratioExpFmt} 26200 Put` },
+        option_symbol: { ticker: `${ratioTicker}P26200`, expiration_date: ratioExpDate, strike_price: "26200", option_type: "PUT" },
+        units: 1,
+        price: 72.00,
+        average_purchase_price: 95.00,
+        cost_basis: -190.00,
+        open_pnl: -46.00,
+        multiplier: 2,
+        cap_req: 190.00,
+        required_capital: 190.00
+      },
+      {
+        symbol: { symbol: "/MNQZ6", raw_symbol: `/MNQZ6 ${ratioTicker}P25800`, description: `/MNQZ6 ${ratioExpFmt} 25800 Put` },
+        option_symbol: { ticker: `${ratioTicker}P25800`, expiration_date: ratioExpDate, strike_price: "25800", option_type: "PUT" },
+        units: -2,
+        price: 48.00,
+        average_purchase_price: 82.00,
+        cost_basis: 328.00,
+        open_pnl: 136.00,
+        multiplier: 2,
+        cap_req: 1220.00,
+        required_capital: 1220.00
+      }
+    ];
+  }
+
+  if (accountId === "mock-acc-rh-02") {
+    return [
+      {
+        symbol: { symbol: "MSFT", description: "Microsoft Corp" },
+        units: 12,
+        price: 442.10,
+        average_purchase_price: 430.00,
+        open_pnl: 145.20
+      },
+      {
+        symbol: { symbol: "AMZN", description: "Amazon.com Inc" },
+        units: 20,
+        price: 185.00,
+        average_purchase_price: 180.50,
+        open_pnl: 90.00
+      }
+    ];
+  }
+
+  if (accountId === "mock-acc-schwab-03") {
+    return [
+      {
+        symbol: { symbol: "VOO", description: "Vanguard S&P 500 ETF" },
+        units: 110,
+        price: 512.30,
+        average_purchase_price: 485.00,
+        open_pnl: 3003.00
+      }
+    ];
+  }
+
+  return [];
+}
+
+// Backwards-compatible getter proxies
+const MOCK_ACTIVITIES = new Proxy({}, {
+  get: (_target, prop: string) => getMockActivities(prop)
+});
+
+const MOCK_POSITIONS = new Proxy({}, {
+  get: (_target, prop: string) => getMockPositions(prop)
+});
 
 async function getOrRegisterUser(snaptrade: Snaptrade<CommercialApiKeyAuth>, uid: string): Promise<{ userId: string; userSecret: string }> {
   const safeUid = uid.replace(/[^a-zA-Z0-9_-]/g, "_");
