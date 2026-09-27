@@ -523,70 +523,41 @@ export default function App() {
   // Fetch all accounts, positions, activities and connections
   const fetchAllData = useCallback(async (uid: string) => {
     if (!uid) return;
+    const isGuest = uid === GUEST_UID;
+    // Guest mode: omit the uid param so the server returns mock data even when
+    // SnapTrade API keys are configured. The server's mock fallback triggers on
+    // `!uid`, so passing an empty query string guarantees mock accounts.
+    const uidParam = isGuest ? '' : `uid=${encodeURIComponent(uid)}`;
     setLoading(true);
     try {
       // 1. Fetch Accounts
-      const accRes = await fetch(`/api/snaptrade/accounts?uid=${encodeURIComponent(uid)}`);
+      const accRes = await fetch(`/api/snaptrade/accounts?${uidParam}`);
       const accData = await accRes.json();
       const rawAccounts: SnapTradeAccount[] = accData.items || [];
 
       // Fetch live balances (Option BP / Cash / NetLiq) for each account
-      const fetchedAccounts: SnapTradeAccount[] = await Promise.all(
-        rawAccounts.map(async (acc) => {
-          try {
-            const balRes = await fetch(`/api/snaptrade/accounts/${acc.id}/balances?uid=${encodeURIComponent(uid)}`);
-            const balData = await balRes.json();
-            const balances = Array.isArray(balData) ? balData : (balData.data || [balData]);
-            const primaryBal = balances[0] || {};
-            
-            const totalNetLiq = acc.balance?.total?.amount ?? (typeof primaryBal.total === 'object' ? primaryBal.total?.amount : primaryBal.total) ?? primaryBal.amount ?? 0;
-            const rawCash = (typeof primaryBal.cash === 'object' ? primaryBal.cash?.amount : primaryBal.cash) ?? acc.balance?.cash?.amount ?? 0;
-            const rawBp = (typeof primaryBal.buying_power === 'object' ? primaryBal.buying_power?.amount : primaryBal.buying_power) ?? primaryBal.option_buying_power ?? rawCash;
-
-            return {
-              ...acc,
-              balance: {
-                total: { amount: totalNetLiq || rawCash, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.total?.currency || "USD" },
-                cash: { amount: rawCash || rawBp, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.cash?.currency || "USD" },
-                buying_power: { amount: rawBp, currency: primaryBal.currency?.code || primaryBal.currency || "USD" },
-                derivative_buying_power: rawBp
-              }
-            };
-          } catch {
-            return acc;
-          }
-        })
-      );
-      setAccounts(fetchedAccounts);
-
-      // 2. Check Tastytrade OAuth Direct Connection & Accounts
-      let tastyAccs: SnapTradeAccount[] = [];
-      try {
-        const tastyStatusRes = await fetch(`/api/tastytrade/status?uid=${encodeURIComponent(uid)}`);
-        const tastyStatusData = await tastyStatusRes.json();
-        const isTastyConnected = Boolean(tastyStatusData.isConnected);
-
-        setTastyConnected(isTastyConnected);
-        setTastyUser(tastyStatusData.user || null);
-
-        if (isTastyConnected) {
-          const tastyAccRes = await fetch(`/api/tastytrade/accounts?uid=${encodeURIComponent(uid)}`);
-          const tastyAccData = await tastyAccRes.json();
-          const rawTastyAccs = tastyAccData.items || [];
-
-          tastyAccs = await Promise.all(
-            rawTastyAccs.map(async (acc: any) => {
+      // Skip for mock accounts — they already carry inline balances.
+      const fetchedAccounts: SnapTradeAccount[] = isGuest
+        ? rawAccounts
+        : await Promise.all(
+            rawAccounts.map(async (acc) => {
               try {
-                const balRes = await fetch(`/api/tastytrade/accounts/${acc.number}/balances?uid=${encodeURIComponent(uid)}`);
+                const balRes = await fetch(`/api/snaptrade/accounts/${acc.id}/balances?${uidParam}`);
                 const balData = await balRes.json();
+                const balances = Array.isArray(balData) ? balData : (balData.data || [balData]);
+                const primaryBal = balances[0] || {};
+                
+                const totalNetLiq = acc.balance?.total?.amount ?? (typeof primaryBal.total === 'object' ? primaryBal.total?.amount : primaryBal.total) ?? primaryBal.amount ?? 0;
+                const rawCash = (typeof primaryBal.cash === 'object' ? primaryBal.cash?.amount : primaryBal.cash) ?? acc.balance?.cash?.amount ?? 0;
+                const rawBp = (typeof primaryBal.buying_power === 'object' ? primaryBal.buying_power?.amount : primaryBal.buying_power) ?? primaryBal.option_buying_power ?? rawCash;
+
                 return {
                   ...acc,
                   balance: {
-                    total: balData.total || { amount: 0, currency: 'USD' },
-                    cash: balData.cash || { amount: 0, currency: 'USD' },
-                    buying_power: { amount: balData.derivative_buying_power ?? balData.cash?.amount ?? 0, currency: 'USD' },
-                    derivative_buying_power: balData.derivative_buying_power,
-                    equity_buying_power: balData.equity_buying_power
+                    total: { amount: totalNetLiq || rawCash, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.total?.currency || "USD" },
+                    cash: { amount: rawCash || rawBp, currency: primaryBal.currency?.code || primaryBal.currency || acc.balance?.cash?.currency || "USD" },
+                    buying_power: { amount: rawBp, currency: primaryBal.currency?.code || primaryBal.currency || "USD" },
+                    derivative_buying_power: rawBp
                   }
                 };
               } catch {
@@ -594,9 +565,48 @@ export default function App() {
               }
             })
           );
+      setAccounts(fetchedAccounts);
+
+      // 2. Check Tastytrade OAuth Direct Connection & Accounts (skip in guest mode)
+      let tastyAccs: SnapTradeAccount[] = [];
+      if (!isGuest) {
+        try {
+          const tastyStatusRes = await fetch(`/api/tastytrade/status?${uidParam}`);
+          const tastyStatusData = await tastyStatusRes.json();
+          const isTastyConnected = Boolean(tastyStatusData.isConnected);
+
+          setTastyConnected(isTastyConnected);
+          setTastyUser(tastyStatusData.user || null);
+
+          if (isTastyConnected) {
+            const tastyAccRes = await fetch(`/api/tastytrade/accounts?${uidParam}`);
+            const tastyAccData = await tastyAccRes.json();
+            const rawTastyAccs = tastyAccData.items || [];
+
+            tastyAccs = await Promise.all(
+              rawTastyAccs.map(async (acc: any) => {
+                try {
+                  const balRes = await fetch(`/api/tastytrade/accounts/${acc.number}/balances?${uidParam}`);
+                  const balData = await balRes.json();
+                  return {
+                    ...acc,
+                    balance: {
+                      total: balData.total || { amount: 0, currency: 'USD' },
+                      cash: balData.cash || { amount: 0, currency: 'USD' },
+                      buying_power: { amount: balData.derivative_buying_power ?? balData.cash?.amount ?? 0, currency: 'USD' },
+                      derivative_buying_power: balData.derivative_buying_power,
+                      equity_buying_power: balData.equity_buying_power
+                    }
+                  };
+                } catch {
+                  return acc;
+                }
+              })
+            );
+          }
+        } catch (tErr) {
+          console.warn('Tastytrade direct check error:', tErr);
         }
-      } catch (tErr) {
-        console.warn('Tastytrade direct check error:', tErr);
       }
 
       // If Tastytrade Direct is connected, prioritize Tastytrade Direct over SnapTrade duplicate Tasty accounts
@@ -607,13 +617,15 @@ export default function App() {
       const combinedAccounts = [...activeSnapAccounts, ...tastyAccs];
       setAccounts(combinedAccounts);
 
-      // 3. Fetch Connections
-      try {
-        const connRes = await fetch(`/api/snaptrade/connections?uid=${encodeURIComponent(uid)}`);
-        const connData = await connRes.json();
-        setConnections(Array.isArray(connData) ? connData : []);
-      } catch (e) {
-        console.warn('Failed to load connections:', e);
+      // 3. Fetch Connections (skip in guest mode — no real connections)
+      if (!isGuest) {
+        try {
+          const connRes = await fetch(`/api/snaptrade/connections?${uidParam}`);
+          const connData = await connRes.json();
+          setConnections(Array.isArray(connData) ? connData : []);
+        } catch (e) {
+          console.warn('Failed to load connections:', e);
+        }
       }
 
       if (combinedAccounts.length === 0) {
@@ -634,7 +646,7 @@ export default function App() {
 
           // Activities / Transactions
           try {
-            const actRes = await fetch(`/api/snaptrade/accounts/${acc.id}/activities?uid=${encodeURIComponent(uid)}`);
+            const actRes = await fetch(`/api/snaptrade/accounts/${acc.id}/activities?${uidParam}`);
             const actData = await actRes.json();
             const items = actData.data || [];
 
@@ -701,7 +713,7 @@ export default function App() {
 
           // Positions
           try {
-            const posRes = await fetch(`/api/snaptrade/accounts/${acc.id}/positions?uid=${encodeURIComponent(uid)}`);
+            const posRes = await fetch(`/api/snaptrade/accounts/${acc.id}/positions?${uidParam}`);
             const posData = await posRes.json();
             const pItems = posData.positions || [];
 
