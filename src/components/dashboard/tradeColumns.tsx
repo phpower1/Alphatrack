@@ -179,7 +179,8 @@ export function buildTradeColumns(
       underlyingCell: () => <Dash />,
       strategyCell: (group) => {
         const openers = group.items.filter((i: any) => !i.isClosingLeg && (i.details?.action !== 'BTC' && i.details?.action !== 'STC'));
-        const hasClosingLegs = group.items.some((i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC');
+        const isAllClosed = group.items.length > 0 && group.items.every((i: any) => i.status === 'Closed');
+        const hasClosingLegs = group.items.some((i: any) => i.isClosingLeg || i.details?.action === 'BTC' || i.details?.action === 'STC') || isAllClosed;
         const legCount = openers.length > 0 ? openers.length : group.items.length;
         return (
           <div className="flex items-center gap-1.5">

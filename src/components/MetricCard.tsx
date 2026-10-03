@@ -38,6 +38,7 @@ export interface MetricCardProps {
    * masquerade as broker-reported numbers.
    */
   estimated?: boolean;
+  onClick?: () => void;
   className?: string;
 }
 
@@ -54,13 +55,32 @@ export function MetricCard({
   viz,
   loading = false,
   estimated = false,
+  onClick,
   className,
 }: MetricCardProps) {
+  const isClickable = Boolean(onClick);
+
   return (
     <div
+      role={isClickable ? 'button' : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onClick={onClick}
+      onKeyDown={
+        isClickable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onClick?.();
+              }
+            }
+          : undefined
+      }
       className={cn(
         'flex flex-col justify-between gap-2 rounded-xl bg-card p-5 ring-1 ring-border',
-        'transition-colors hover:ring-foreground/15',
+        'transition-all',
+        isClickable
+          ? 'cursor-pointer hover:ring-brand/40 hover:border-brand/30 hover:bg-surface-2/40'
+          : 'hover:ring-foreground/15',
         className
       )}
     >

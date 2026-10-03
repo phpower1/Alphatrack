@@ -66,7 +66,7 @@ import { DataTable } from './components/DataTable/DataTable';
 import { buildTradeColumns } from './components/dashboard/tradeColumns';
 import { buildPositionColumns } from './components/dashboard/positionColumns';
 import { EmptyState } from './components/EmptyState';
-import { TableToolbar, type PeriodFilter } from './components/dashboard/TableToolbar';
+import { TableToolbar, type PeriodFilter, type TradeStatusFilter } from './components/dashboard/TableToolbar';
 import { AppHeader } from './components/layout/AppHeader';
 import { MetricCard } from './components/MetricCard';
 import { Money } from './components/format/Money';
@@ -271,6 +271,7 @@ export default function App() {
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'trades' | 'positions'>('positions');
   const [groupBy, setGroupBy] = useState<'strategy' | 'flat'>('strategy');
+  const [statusFilter, setStatusFilter] = useState<TradeStatusFilter>('all');
   const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('all');
   const [collapsedUnderlyings, setCollapsedUnderlyings] = useState<Record<string, boolean>>({});
   const [collapsedStrategies, setCollapsedStrategies] = useState<Record<string, boolean>>({});
@@ -1278,6 +1279,11 @@ export default function App() {
         });
       }
     }
+    if (statusFilter === 'realized') {
+      list = list.filter(t => t.status === 'Closed');
+    } else if (statusFilter === 'open') {
+      list = list.filter(t => t.status === 'Open');
+    }
     if (searchFilter.trim()) {
       const q = searchFilter.toLowerCase();
       list = list.filter(t => 
@@ -1288,11 +1294,14 @@ export default function App() {
         (t.details?.expirationFormatted && t.details.expirationFormatted.toLowerCase().includes(q)) ||
         (t.details?.strikeFormatted && t.details.strikeFormatted.toLowerCase().includes(q)) ||
         (t.details?.action && t.details.action.toLowerCase().includes(q)) ||
-        (t.description && t.description.toLowerCase().includes(q))
+        (t.description && t.description.toLowerCase().includes(q)) ||
+        (q === 'realized' && t.status === 'Closed') ||
+        (q === 'closed' && t.status === 'Closed') ||
+        (q === 'open' && t.status === 'Open')
       );
     }
     return list;
-  }, [trades, selectedAccountId, periodFilter, searchFilter]);
+  }, [trades, selectedAccountId, statusFilter, periodFilter, searchFilter]);
 
   const filteredPositions = useMemo(() => {
     let list = positions;
@@ -1538,6 +1547,44 @@ export default function App() {
   }, [trades]);
 
   const activeTrade = useMemo(() => {
+    if (activeTab === 'trades' && filteredTrades.length > 0) {
+      if (activeTradeId) {
+        const found = filteredTrades.find(t => t.id === activeTradeId);
+        if (found) return found;
+
+        for (const uGroup of groupedTrades) {
+          for (const strat of uGroup.strategies) {
+            if (strat.id === activeTradeId) {
+              const firstItem = strat.items[0];
+              if (firstItem) return firstItem as Trade;
+            }
+            const foundLeg = strat.items.find((i: any) => i.id === activeTradeId);
+            if (foundLeg) return foundLeg as Trade;
+          }
+        }
+      }
+      return filteredTrades[0];
+    }
+
+    if (activeTab === 'positions' && filteredPositions.length > 0) {
+      if (activeTradeId) {
+        const foundPos = filteredPositions.find(p => p.id === activeTradeId);
+        if (foundPos) return normalizePositionToTrade(foundPos);
+
+        for (const uGroup of groupedPositions) {
+          for (const strat of uGroup.strategies) {
+            if (strat.id === activeTradeId) {
+              const firstItem = strat.items[0];
+              if (firstItem) return normalizePositionToTrade(firstItem as Position);
+            }
+            const foundLeg = strat.items.find((i: any) => i.id === activeTradeId);
+            if (foundLeg) return normalizePositionToTrade(foundLeg as Position);
+          }
+        }
+      }
+      return normalizePositionToTrade(filteredPositions[0]);
+    }
+
     if (!activeTradeId) {
       return (filteredTrades || [])[0] || (trades || [])[0] || null;
     }
@@ -1579,7 +1626,7 @@ export default function App() {
     }
 
     return (filteredTrades || [])[0] || (trades || [])[0] || null;
-  }, [trades, positions, activeTradeId, filteredTrades, activeTab, groupedPositions, groupedTrades, normalizePositionToTrade]);
+  }, [trades, positions, activeTradeId, filteredTrades, filteredPositions, activeTab, groupedPositions, groupedTrades, normalizePositionToTrade]);
 
   const activeStrategy = useMemo(() => {
     const allGroups = activeTab === 'positions' ? groupedPositions : groupedTrades;
@@ -1861,7 +1908,7 @@ export default function App() {
     [collapsedUnderlyings, collapsedStrategies]
   );
 
-  const isFiltered = searchFilter.trim().length > 0;
+  const isFiltered = searchFilter.trim().length > 0 || periodFilter !== 'all' || statusFilter !== 'all';
 
   // --- Derived series for the inline visualisations -----------------------
   // Everything below is computed from data already synced. Where no history
@@ -2274,6 +2321,10 @@ export default function App() {
               icon={TrendingUp}
               loading={loading}
               value={<PnL value={realizedPnlTotal} size="lg" />}
+              onClick={() => {
+                setActiveTab('trades');
+                setStatusFilter('realized');
+              }}
               viz={
                 <Sparkline
                   data={realizedPnlSeries}
@@ -2293,6 +2344,9 @@ export default function App() {
               accent="warning"
               loading={loading}
               value={portfolioSummary.positionsCount}
+              onClick={() => {
+                setActiveTab('positions');
+              }}
               viz={
                 positionsSplit.wins + positionsSplit.losses > 0 ? (
                   <WinLossBar wins={positionsSplit.wins} losses={positionsSplit.losses} />
@@ -2324,6 +2378,8 @@ export default function App() {
                   positionsCount={filteredPositions.length}
                   groupBy={groupBy}
                   onGroupByChange={setGroupBy}
+                  status={statusFilter}
+                  onStatusChange={setStatusFilter}
                   search={searchFilter}
                   onSearchChange={setSearchFilter}
                   period={periodFilter}
@@ -2354,15 +2410,24 @@ export default function App() {
                     empty={
                       <EmptyState
                         variant={isFiltered ? 'no-results' : 'no-data'}
-                        title={isFiltered ? 'No trades match your search' : 'No trades synced yet'}
+                        title={isFiltered ? 'No trades match your filters' : 'No trades synced yet'}
                         body={
                           isFiltered
-                            ? `Nothing matched "${searchFilter}". Try another symbol or broker.`
+                            ? (searchFilter.trim()
+                                ? `Nothing matched "${searchFilter}". Try another symbol or adjusting your filters.`
+                                : `No trades found for the selected ${statusFilter !== 'all' ? `${statusFilter} status` : 'filters'}. Try resetting your filters.`)
                             : 'Once a brokerage is linked and synced, your transaction history appears here.'
                         }
                         action={
                           isFiltered
-                            ? { label: 'Clear search', onClick: () => setSearchFilter('') }
+                            ? {
+                                label: 'Reset filters',
+                                onClick: () => {
+                                  setSearchFilter('');
+                                  setPeriodFilter('all');
+                                  setStatusFilter('all');
+                                },
+                              }
                             : { label: 'Sync portfolio', onClick: handleRefresh }
                         }
                       />

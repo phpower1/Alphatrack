@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Calendar, FolderTree, Search, X } from 'lucide-react';
+import { BadgeCheck, Calendar, FolderTree, Search, X } from 'lucide-react';
 
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -20,6 +20,14 @@ export const PERIOD_OPTIONS: { value: PeriodFilter; label: string }[] = [
   { value: '1y', label: 'Last year' },
 ];
 
+export type TradeStatusFilter = 'all' | 'realized' | 'open';
+
+export const TRADE_STATUS_OPTIONS: { value: TradeStatusFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'realized', label: 'Realized' },
+  { value: 'open', label: 'Open' },
+];
+
 export interface TableToolbarProps {
   activeTab: 'trades' | 'positions';
   onTabChange: (tab: 'trades' | 'positions') => void;
@@ -28,6 +36,9 @@ export interface TableToolbarProps {
 
   groupBy: 'strategy' | 'flat';
   onGroupByChange: (groupBy: 'strategy' | 'flat') => void;
+
+  status?: TradeStatusFilter;
+  onStatusChange?: (status: TradeStatusFilter) => void;
 
   period?: PeriodFilter;
   onPeriodChange?: (period: PeriodFilter) => void;
@@ -50,6 +61,8 @@ export function TableToolbar({
   positionsCount,
   groupBy,
   onGroupByChange,
+  status = 'all',
+  onStatusChange,
   period = 'all',
   onPeriodChange,
   search,
@@ -123,6 +136,37 @@ export function TableToolbar({
             </ToggleGroupItem>
           </ToggleGroup>
         </div>
+
+        {activeTab === 'trades' && onStatusChange && (
+          <div className="flex items-center gap-2">
+            <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-subtle-foreground">
+              <BadgeCheck className="size-3 text-brand" aria-hidden="true" />
+              Status
+            </span>
+            <ToggleGroup
+              value={[status]}
+              onValueChange={(value) => {
+                const next = value[0] as TradeStatusFilter | undefined;
+                // Base UI allows deselection; keep the control exclusive.
+                if (next) onStatusChange(next);
+              }}
+              variant="outline"
+              size="sm"
+              spacing={0}
+              aria-label="Filter trades by status"
+            >
+              <ToggleGroupItem value="all" className="text-xs">
+                All
+              </ToggleGroupItem>
+              <ToggleGroupItem value="realized" className="text-xs">
+                Realized
+              </ToggleGroupItem>
+              <ToggleGroupItem value="open" className="text-xs">
+                Open
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+        )}
 
         {activeTab === 'trades' && onPeriodChange && (
           <div className="flex items-center gap-1.5">
