@@ -194,6 +194,8 @@ const pairOpenAndClosingTrades = (trades: Trade[]): Trade[] => {
         opener.isOpeningLeg = true;
 
         closer.status = 'Closed';
+        closer.closePrice = closer.price;
+        closer.closeDate = closer.date;
         closer.openingTrade = opener;
         closer.linkedTradeId = opener.id;
         closer.isClosingLeg = true;
@@ -881,6 +883,10 @@ export default function App() {
               const isOpenTrade = isOpeningAction && hasValidFutureExpiry;
               const status: 'Open' | 'Closed' = isOpenTrade ? 'Open' : 'Closed';
 
+              const isClosingAction = details.action === 'BTC' || details.action === 'STC';
+              const isExpiredAction = details.action === 'EXPIRED';
+              const initialCloseDate = isClosingAction ? tradeDate : (isExpiredAction ? (details.expirationDate || tradeDate) : null);
+
               return {
                 id: act.id || `${acc.id}-${idx}`,
                 accountId: acc.id,
@@ -892,7 +898,7 @@ export default function App() {
                 date: tradeDate,
                 status: status,
                 closePrice: null,
-                closeDate: status === 'Closed' ? (details.expirationDate || tradeDate) : null,
+                closeDate: initialCloseDate,
                 requiredCapital: reqCapital,
                 peakCapital: peakCapital,
                 fees: details.fees || 0,
@@ -1225,6 +1231,10 @@ export default function App() {
                 const isOpenTrade = isOpeningAction && hasValidFutureExpiry;
                 const status: 'Open' | 'Closed' = isOpenTrade ? 'Open' : 'Closed';
 
+                const isClosingAction = details.action === 'BTC' || details.action === 'STC';
+                const isExpiredAction = details.action === 'EXPIRED';
+                const initialCloseDate = isClosingAction ? tradeDate : (isExpiredAction ? (details.expirationDate || tradeDate) : null);
+
                 return {
                   id: tx.id ? `tasty-tx-${tx.id}` : `tasty-tx-${acc.id}-${idx}`,
                   accountId: acc.id,
@@ -1236,7 +1246,7 @@ export default function App() {
                   date: tradeDate,
                   status: status,
                   closePrice: null,
-                  closeDate: status === 'Closed' ? (details.expirationDate || tradeDate) : null,
+                  closeDate: initialCloseDate,
                   requiredCapital: reqCapital,
                   peakCapital: peakCapital,
                   fees: details.fees || 0,
@@ -1864,8 +1874,11 @@ export default function App() {
         if (!isNaN(t)) itemDates.push(t);
       }
       if (item.closeDate) {
-        const t = new Date(item.closeDate).getTime();
-        if (!isNaN(t)) itemDates.push(t);
+        const isFuturePlaceholder = item.details?.expirationDate && item.closeDate === item.details.expirationDate && !item.isExpiredTrade;
+        if (!isFuturePlaceholder) {
+          const t = new Date(item.closeDate).getTime();
+          if (!isNaN(t)) itemDates.push(t);
+        }
       }
 
       if (isPosItem) {
@@ -1889,6 +1902,9 @@ export default function App() {
         totalExitCap += curr;
       } else if (isTradeItem) {
         if (item.status === 'Open') hasOpenLeg = true;
+        if (item.holdingDays) {
+          maxDaysHeld = Math.max(maxDaysHeld, item.holdingDays);
+        }
         const legRoi = calculateROI(item as Trade);
         if (legRoi) {
           totalNetProfit += legRoi.profit;
@@ -1932,11 +1948,16 @@ export default function App() {
       }
     }
 
+    // For closed strategies, if legs have known holding duration from paired executions, use it
+    if (!hasOpenLeg && maxDaysHeld > 1) {
+      stratDaysHeld = maxDaysHeld;
+    }
+
     // Fallbacks if span between dates was single day
     if (stratDaysHeld === 1) {
       if (maxDaysHeld > 1) {
         stratDaysHeld = maxDaysHeld;
-      } else if (strategy.expirationDate && itemDates.length > 0) {
+      } else if (strategy.expirationDate && itemDates.length > 0 && strategy.items.some(i => (i as any).isExpiredTrade || i.details?.isExpired)) {
         try {
           const expT = parseISO(strategy.expirationDate).getTime();
           const minDate = Math.min(...itemDates);
