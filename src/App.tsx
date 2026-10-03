@@ -82,6 +82,10 @@ import { decodeTradePayload, createSyntheticTradeFromPayload, SyntheticShareData
 // Local / Firestore persistence helpers for Tastytrade session
 const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
 const SELECTED_ACCOUNT_STORAGE_KEY = 'alphatrack_selected_account_id';
+const ACTIVE_TAB_STORAGE_KEY = 'alphatrack_active_tab';
+const GROUP_BY_STORAGE_KEY = 'alphatrack_group_by';
+const STATUS_FILTER_STORAGE_KEY = 'alphatrack_status_filter';
+const PERIOD_FILTER_STORAGE_KEY = 'alphatrack_period_filter';
 
 interface StoredTastytradeSession {
   login: string;
@@ -338,10 +342,58 @@ export default function App() {
   const [refreshing, setRefreshing] = useState(false);
   // View & Grouping states
   const [activeTradeId, setActiveTradeId] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'trades' | 'positions'>('positions');
-  const [groupBy, setGroupBy] = useState<'strategy' | 'flat'>('strategy');
-  const [statusFilter, setStatusFilter] = useState<TradeStatusFilter>('all');
-  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('all');
+  const [activeTab, setActiveTab] = useState<'trades' | 'positions'>(() => {
+    try {
+      const saved = localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+      if (saved === 'trades' || saved === 'positions') return saved;
+    } catch {}
+    return 'positions';
+  });
+  const [groupBy, setGroupBy] = useState<'strategy' | 'flat'>(() => {
+    try {
+      const saved = localStorage.getItem(GROUP_BY_STORAGE_KEY);
+      if (saved === 'strategy' || saved === 'flat') return saved;
+    } catch {}
+    return 'strategy';
+  });
+  const [statusFilter, setStatusFilter] = useState<TradeStatusFilter>(() => {
+    try {
+      const saved = localStorage.getItem(STATUS_FILTER_STORAGE_KEY);
+      if (saved === 'all' || saved === 'realized' || saved === 'open') return saved as TradeStatusFilter;
+    } catch {}
+    return 'all';
+  });
+  const [periodFilter, setPeriodFilter] = useState<PeriodFilter>(() => {
+    try {
+      const saved = localStorage.getItem(PERIOD_FILTER_STORAGE_KEY);
+      if (saved && ['all', '1m', '3m', '6m', 'ytd', '1y'].includes(saved)) return saved as PeriodFilter;
+    } catch {}
+    return 'all';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, activeTab);
+    } catch {}
+  }, [activeTab]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(GROUP_BY_STORAGE_KEY, groupBy);
+    } catch {}
+  }, [groupBy]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STATUS_FILTER_STORAGE_KEY, statusFilter);
+    } catch {}
+  }, [statusFilter]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(PERIOD_FILTER_STORAGE_KEY, periodFilter);
+    } catch {}
+  }, [periodFilter]);
   const [collapsedUnderlyings, setCollapsedUnderlyings] = useState<Record<string, boolean>>({});
   const [collapsedStrategies, setCollapsedStrategies] = useState<Record<string, boolean>>({});
   const [searchFilter, setSearchFilter] = useState('');
