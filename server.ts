@@ -2056,6 +2056,12 @@ async function startServer() {
         const createdAt = p["created-at"] || p.created_at || "";
         const updatedAt = p["updated-at"] || p.updated_at || "";
 
+        // Forward option expiration date, strike price, and option type from Tastytrade position
+        const expiresAt = p["expires-at"] || p.expires_at || p["expiration-date"] || p.expiration_date || undefined;
+        const strikePrice = p["strike-price"] !== undefined ? parseFloat(p["strike-price"]) : (p.strike_price !== undefined ? parseFloat(p.strike_price) : undefined);
+        const optType = p["option-type"] || p.option_type || undefined;
+        const productCode = p["future-option-product-code"] || p.future_option_product_code || undefined;
+
         return {
           symbol,
           underlying_symbol: underlyingSymbol,
@@ -2071,6 +2077,10 @@ async function startServer() {
           extrinsic_value: extrinsicValue,
           realized_day_gain: realizedDayGain,
           open_pnl: openPnl,
+          expires_at: expiresAt,
+          strike_price: strikePrice,
+          option_type: optType,
+          future_option_product_code: productCode,
           cap_req: capReq > 0 ? capReq : undefined,
           required_capital: capReq > 0 ? capReq : undefined,
           created_at: createdAt || undefined,

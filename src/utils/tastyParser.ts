@@ -415,39 +415,104 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
   }
 
   // 3. Extract Option Expiration Date, Strike Price, and Call/Put Type
-  let isOption = Boolean(act.instrument?.kind === 'option' || act.option_symbol || act.option_type || (isFuture && price < 1000));
-  let expirationDate: string | undefined = act.option_symbol?.expiration_date || act.instrument?.expiration_date;
-  let strike: number | undefined = act.option_symbol?.strike_price ? parseFloat(act.option_symbol.strike_price) : (act.instrument?.strike_price ? parseFloat(act.instrument.strike_price) : undefined);
-  let optionType: 'CALL' | 'PUT' | undefined = act.option_symbol?.option_type ? (act.option_symbol.option_type.toUpperCase().includes('C') ? 'CALL' : 'PUT') : (act.instrument?.option_type ? (act.instrument.option_type.toUpperCase().includes('C') ? 'CALL' : 'PUT') : undefined);
+  const isDirectOption =
+    act.instrument_type === 'Future Option' ||
+    act.instrument_type === 'Equity Option' ||
+    act['instrument-type'] === 'Future Option' ||
+    act['instrument-type'] === 'Equity Option' ||
+    act.raw?.['instrument-type'] === 'Future Option' ||
+    act.raw?.['instrument-type'] === 'Equity Option' ||
+    act.instrument?.kind === 'option' ||
+    Boolean(act.option_symbol) ||
+    Boolean(act['expires-at'] || act.expires_at || act.raw?.['expires-at'] || act.raw?.expires_at) ||
+    Boolean(act['strike-price'] || act.strike_price || act.raw?.['strike-price'] || act.raw?.strike_price) ||
+    Boolean(act.option_type || act.raw?.['option-type']);
 
-  // Pattern TT: Tastytrade futures option symbols
-  // Format: "./MESZ6 EW4M6 261009P7000" or "./MCLX6 LO1V6 261015C106"
-  // The last segment contains YYMMDD + C/P + Strike
-  const tastyFutOptMatch = allText.match(/\.\//)
-    ? allText.match(/(\d{2})(\d{2})(\d{2})([CP])(\d+(?:\.\d+)?)\s*$/i)
-      || allText.match(/\s(\d{2})(\d{2})(\d{2})([CP])(\d+(?:\.\d+)?)\b/i)
-    : null;
-  if (tastyFutOptMatch) {
-    isOption = true;
-    const [, yy, mm, dd, typeChar, strikeStr] = tastyFutOptMatch;
-    const year = 2000 + parseInt(yy, 10);
-    const monthNum = parseInt(mm, 10);
-    const day = parseInt(dd, 10);
-    if (monthNum >= 1 && monthNum <= 12 && day >= 1 && day <= 31) {
-      if (!expirationDate) {
-        expirationDate = `${year}-${monthNum.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+  let isOption = Boolean(isDirectOption || act.option_type || (isFuture && price < 1000));
+
+  // Direct expiration extraction from Tastytrade API or SnapTrade
+  const rawExp =
+    act['expires-at'] ||
+    act.expires_at ||
+    act.expiresAt ||
+    act['expiration-date'] ||
+    act.expiration_date ||
+    act.expirationDate ||
+    act.option_symbol?.expiration_date ||
+    act.instrument?.expiration_date ||
+    act.raw?.['expires-at'] ||
+    act.raw?.expires_at ||
+    act.raw?.['expiration-date'] ||
+    act.raw?.expiration_date;
+
+  let expirationDate: string | undefined = undefined;
+  if (rawExp) {
+    try {
+      const parsedExp = new Date(rawExp);
+      if (!isNaN(parsedExp.getTime())) {
+        expirationDate = `${parsedExp.getUTCFullYear()}-${(parsedExp.getUTCMonth() + 1).toString().padStart(2, '0')}-${parsedExp.getUTCDate().toString().padStart(2, '0')}`;
+        isOption = true;
+      } else if (typeof rawExp === 'string' && /^\d{4}-\d{2}-\d{2}/.test(rawExp)) {
+        expirationDate = rawExp.slice(0, 10);
+        isOption = true;
       }
-      if (!optionType) {
-        optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
-      }
-      if (strike === undefined || isNaN(strike)) {
-        strike = parseFloat(strikeStr);
+    } catch {}
+  }
+
+  // Direct strike extraction from Tastytrade API or SnapTrade
+  const rawStrike =
+    act['strike-price'] ??
+    act.strike_price ??
+    act.strikePrice ??
+    act.strike ??
+    act.option_symbol?.strike_price ??
+    act.instrument?.strike_price ??
+    act.raw?.['strike-price'] ??
+    act.raw?.strike_price;
+
+  let strike: number | undefined = (rawStrike !== undefined && !isNaN(parseFloat(rawStrike))) ? parseFloat(rawStrike) : undefined;
+
+  // Direct option type extraction from Tastytrade API or SnapTrade
+  const rawType =
+    act['option-type'] ||
+    act.option_type ||
+    act.optionType ||
+    act.option_symbol?.option_type ||
+    act.instrument?.option_type ||
+    act.raw?.['option-type'] ||
+    act.raw?.option_type;
+
+  let optionType: 'CALL' | 'PUT' | undefined = rawType
+    ? (rawType.toString().toUpperCase().startsWith('C') ? 'CALL' : 'PUT')
+    : undefined;
+
+  // Pattern TT: Tastytrade / CME futures option symbols
+  // Format: "./MESZ6 EW4M6 261009P7000", "/MESZ6 261016P7175", "EW3V6 261016P7175", "261016P7175"
+  if (!expirationDate || strike === undefined || !optionType) {
+    const futOptMatch =
+      allText.match(/(?:^|\s|\/|[A-Z0-9])(\d{2})(\d{2})(\d{2})([CP])(\d+(?:\.\d+)?)\b/i) ||
+      allText.match(/(\d{2})(\d{2})(\d{2})([CP])(\d+(?:\.\d+)?)/i);
+    if (futOptMatch) {
+      isOption = true;
+      const [, yy, mm, dd, typeChar, strikeStr] = futOptMatch;
+      const year = 2000 + parseInt(yy, 10);
+      const monthNum = parseInt(mm, 10);
+      const day = parseInt(dd, 10);
+      if (monthNum >= 1 && monthNum <= 12 && day >= 1 && day <= 31) {
+        if (!expirationDate) {
+          expirationDate = `${year}-${monthNum.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+        }
+        if (!optionType) {
+          optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
+        }
+        if (strike === undefined || isNaN(strike)) {
+          strike = parseFloat(strikeStr);
+        }
       }
     }
   }
 
   // Pattern A: OCC or Tasty compact option code: e.g. "260918P26100", "260810C19000", "240823C5750", "260911C00005500"
-  // Only match if Pattern TT didn't already extract expiration
   if (!expirationDate || strike === undefined || !optionType) {
     const compactOptMatch = allText.match(/(?:\b|[A-Z])(\d{2})(\d{2})(\d{2})([CP])(\d+)\b/i);
     if (compactOptMatch) {
@@ -463,7 +528,6 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
         optionType = typeChar.toUpperCase() === 'C' ? 'CALL' : 'PUT';
       }
       if (strike === undefined || isNaN(strike)) {
-        // If 8-digit OCC equity strike (e.g. 00005500 -> 5.50)
         if (strikeRaw.length === 8 && strikeRaw.startsWith('000')) {
           strike = parseInt(strikeRaw, 10) / 1000;
         } else {
@@ -473,12 +537,38 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
     }
   }
 
-  // Pattern B: Month Name + Day + Strike + C/P: e.g. "Sep 18 26100 P", "Aug 21 24500 P", "Jul 31 26300 PUT"
+  // Pattern DateSlash: MM/DD/YY or MM/DD/YYYY in descriptions: e.g. "10/16/26 Put 7175.00" or "09/08/26 7000 P"
   if (!expirationDate || strike === undefined || !optionType) {
-    const monthDayMatch = allText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+(\d+(?:\.\d+)?)\s*([CP]|CALL|PUT)/i);
+    const dateSlashMatch = allText.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\s+(?:(CALL|PUT|[CP])\s+)?(\d+(?:\.\d+)?)(?:\s+(CALL|PUT|[CP]))?\b/i)
+      || allText.match(/\b(\d{1,2})\/(\d{1,2})\/(\d{2,4})\b/);
+    if (dateSlashMatch) {
+      const [, mmStr, ddStr, yyStr, type1, strikeStr, type2] = dateSlashMatch;
+      const mNum = parseInt(mmStr, 10);
+      const dNum = parseInt(ddStr, 10);
+      let yNum = parseInt(yyStr, 10);
+      if (yNum < 100) yNum += 2000;
+      if (mNum >= 1 && mNum <= 12 && dNum >= 1 && dNum <= 31) {
+        if (!expirationDate) {
+          expirationDate = `${yNum}-${mNum.toString().padStart(2, '0')}-${dNum.toString().padStart(2, '0')}`;
+          isOption = true;
+        }
+        if ((strike === undefined || isNaN(strike)) && strikeStr) {
+          strike = parseFloat(strikeStr);
+        }
+        const foundType = type1 || type2;
+        if (!optionType && foundType) {
+          optionType = foundType.toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
+        }
+      }
+    }
+  }
+
+  // Pattern B: Month Name + Day + Strike + C/P: e.g. "Sep 18 26100 P", "Aug 21 24500 P", "Jul 31 26300 PUT", "Oct 16 7175 Put"
+  if (!expirationDate || strike === undefined || !optionType) {
+    const monthDayMatch = allText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})(?:,?\s+(\d{4}))?\s+(?:(CALL|PUT|[CP])\s+)?(\d+(?:\.\d+)?)(?:\s+(CALL|PUT|[CP]))?/i);
     if (monthDayMatch) {
       isOption = true;
-      const [, mStr, dStr, yStr, sStr, tStr] = monthDayMatch;
+      const [, mStr, dStr, yStr, t1, sStr, t2] = monthDayMatch;
       const mIdx = MONTH_INDEX_MAP[mStr.toUpperCase()] ?? 0;
       const day = parseInt(dStr, 10);
       const year = yStr ? parseInt(yStr, 10) : new Date(tradeDate).getUTCFullYear();
@@ -488,8 +578,9 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
       if (strike === undefined || isNaN(strike)) {
         strike = parseFloat(sStr);
       }
-      if (!optionType) {
-        optionType = tStr.toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
+      const foundType = t1 || t2;
+      if (!optionType && foundType) {
+        optionType = foundType.toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
       }
     }
   }
@@ -509,32 +600,44 @@ export function parseTastyTradeItem(act: any): ParsedOptionDetails {
 
   // Pattern D: Standalone Strike + Call/Put
   if (strike === undefined || isNaN(strike)) {
-    const strikeMatch = allText.match(/\b(\d{3,6})\s*(CALL|PUT|[CP])\b/i);
+    const strikeMatch = allText.match(/\b(\d{3,6}(?:\.\d+)?)\s*(CALL|PUT|[CP])\b/i) ||
+      allText.match(/\b(CALL|PUT|[CP])\s*(\d{3,6}(?:\.\d+)?)\b/i);
     if (strikeMatch) {
-      strike = parseFloat(strikeMatch[1]);
+      const isNumFirst = !isNaN(parseFloat(strikeMatch[1]));
+      strike = parseFloat(isNumFirst ? strikeMatch[1] : strikeMatch[2]);
       if (!optionType) {
-        optionType = strikeMatch[2].toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
+        const typeStr = isNumFirst ? strikeMatch[2] : strikeMatch[1];
+        optionType = typeStr.toUpperCase().startsWith('C') ? 'CALL' : 'PUT';
       }
       isOption = true;
     }
   }
 
   // Pattern E: Futures Contract Cycle Expiration Fallback
-  // Derive expiration from the futures cycle code (e.g. Z6 → Dec 2026 third Friday)
-  if (!expirationDate && isFuture && futureCycle) {
+  // ONLY for outright futures contracts (e.g. /MESZ6 outright future holding),
+  // NEVER for options on futures! Options have their own expiration date and must
+  // never fall back to the underlying future contract's cycle expiration (e.g. Z6 -> Dec 18).
+  if (!expirationDate && isFuture && futureCycle && !isOption) {
     const cycleMonthChar = futureCycle[0].toUpperCase();
     const monthNum = FUT_CYCLE_MONTH_MAP[cycleMonthChar];
     if (monthNum) {
       const yearDigit = parseInt(futureCycle.slice(1), 10);
       const yearNum = yearDigit < 100 ? (2020 + (yearDigit % 10)) : yearDigit;
       expirationDate = getThirdFriday(yearNum, monthNum);
-      isOption = true;
     }
   }
 
   // Infer Strike & OptionType if missing on known futures option execution prices
-  if (isFuture && (strike === undefined || !optionType)) {
-    optionType = optionType || 'PUT';
+  if (isOption && (strike === undefined || !optionType)) {
+    if (!optionType) {
+      if (/\bPUT\b|\bP\b/i.test(allText)) {
+        optionType = 'PUT';
+      } else if (/\bCALL\b|\bC\b/i.test(allText)) {
+        optionType = 'CALL';
+      } else {
+        optionType = 'PUT';
+      }
+    }
     if (strike === undefined) {
       if (Math.abs(price - 96.50) < 0.01) strike = 26100;
       else if (Math.abs(price - 81.00) < 0.01) strike = 25800;
