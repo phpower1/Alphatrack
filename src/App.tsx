@@ -129,105 +129,144 @@ const pairOpenAndClosingTrades = (trades: Trade[]): Trade[] => {
   };
 
   // Group trades by contract
-  const byContract = new Map<string, { openers: Trade[]; closers: Trade[] }>();
+  const byContract = new Map<string, { openers: Trade[]; closers: Trade[]; expiredEvents: Trade[] }>();
   for (const t of trades) {
     const key = contractKey(t);
     if (!byContract.has(key)) {
-      byContract.set(key, { openers: [], closers: [] });
+      byContract.set(key, { openers: [], closers: [], expiredEvents: [] });
     }
     const group = byContract.get(key)!;
     const action = t.details?.action;
     if (action === 'BTC' || action === 'STC') {
       group.closers.push(t);
-    } else if (action === 'BTO' || action === 'STO') {
+    } else if (action === 'EXPIRED') {
+      group.expiredEvents.push(t);
+    } else if (action === 'BTO' || action === 'STO' || (!action && t.details?.isOption)) {
       group.openers.push(t);
     }
   }
 
-  // For each contract group, pair openers with closers
+  // 1. For each contract group, pair openers with closers (BTC/STC) in chronological order
   for (const [, group] of byContract) {
-    if (group.closers.length === 0 || group.openers.length === 0) continue;
+    if (group.closers.length > 0 && group.openers.length > 0) {
+      // Sort closers by date (earliest first) so we pair in chronological order
+      group.closers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      // Sort openers by date (earliest first)
+      group.openers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
 
-    // Sort closers by date (earliest first) so we pair in chronological order
-    group.closers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
-    // Sort openers by date (earliest first)
-    group.openers.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+      for (const opener of group.openers) {
+        if (opener.closingTrade) continue; // Already paired
 
-    for (const opener of group.openers) {
-      if (opener.closingTrade) continue; // Already paired
+        const openerDate = opener.date || '';
 
-      const openerDate = opener.date || '';
-
-      // Find an available closer that happened on or after opener's date and matches quantity
-      let closerIdx = group.closers.findIndex(
-        c => !c.openingTrade && c.quantity === opener.quantity && (c.date || '') >= openerDate
-      );
-
-      // Fallback: any available closer on or after openerDate
-      if (closerIdx === -1) {
-        closerIdx = group.closers.findIndex(
-          c => !c.openingTrade && (c.date || '') >= openerDate
+        // Find an available closer that happened on or after opener's date and matches quantity
+        let closerIdx = group.closers.findIndex(
+          c => !c.openingTrade && c.quantity === opener.quantity && (c.date || '') >= openerDate
         );
-      }
 
-      // If still not found, allow pairing with any available closer for this contract
-      if (closerIdx === -1) {
-        closerIdx = group.closers.findIndex(c => !c.openingTrade);
-      }
+        // Fallback: any available closer on or after openerDate
+        if (closerIdx === -1) {
+          closerIdx = group.closers.findIndex(
+            c => !c.openingTrade && (c.date || '') >= openerDate
+          );
+        }
 
-      if (closerIdx === -1) continue;
+        // If still not found, allow pairing with any available closer for this contract
+        if (closerIdx === -1) {
+          closerIdx = group.closers.findIndex(c => !c.openingTrade);
+        }
 
-      const closer = group.closers[closerIdx];
+        if (closerIdx === -1) continue;
 
-      // Bidirectionally link opener and closer
-      opener.status = 'Closed';
-      opener.closePrice = closer.price;
-      opener.closeDate = closer.date;
-      opener.closingTrade = closer;
-      opener.linkedTradeId = closer.id;
-      opener.isOpeningLeg = true;
+        const closer = group.closers[closerIdx];
 
-      closer.status = 'Closed';
-      closer.openingTrade = opener;
-      closer.linkedTradeId = opener.id;
-      closer.isClosingLeg = true;
+        // Bidirectionally link opener and closer
+        opener.status = 'Closed';
+        opener.closePrice = closer.price;
+        opener.closeDate = closer.date;
+        opener.closingTrade = closer;
+        opener.linkedTradeId = closer.id;
+        opener.isOpeningLeg = true;
 
-      // Calculate round-trip financials
-      const mult = opener.details?.multiplier || closer.details?.multiplier || 1;
-      const openFees = opener.fees || opener.details?.fees || 0;
-      const closeFees = closer.fees || closer.details?.fees || 0;
-      const totalFees = openFees + closeFees;
-      opener.roundTripFees = totalFees;
-      closer.roundTripFees = totalFees;
+        closer.status = 'Closed';
+        closer.openingTrade = opener;
+        closer.linkedTradeId = opener.id;
+        closer.isClosingLeg = true;
 
-      let roundTripProfit = 0;
-      if (opener.netValue !== undefined && closer.netValue !== undefined) {
-        roundTripProfit = opener.netValue + closer.netValue;
-      } else {
-        const isShort = opener.details?.action === 'STO' || opener.type === 'Sell';
-        if (isShort) {
-          roundTripProfit = ((opener.price - closer.price) * opener.quantity * mult) - totalFees;
+        // Calculate round-trip financials
+        const mult = opener.details?.multiplier || closer.details?.multiplier || 1;
+        const openFees = opener.fees || opener.details?.fees || 0;
+        const closeFees = closer.fees || closer.details?.fees || 0;
+        const totalFees = openFees + closeFees;
+        opener.roundTripFees = totalFees;
+        closer.roundTripFees = totalFees;
+
+        let roundTripProfit = 0;
+        if (opener.netValue !== undefined && closer.netValue !== undefined) {
+          roundTripProfit = opener.netValue + closer.netValue;
         } else {
-          roundTripProfit = ((closer.price - opener.price) * opener.quantity * mult) - totalFees;
+          const isShort = opener.details?.action === 'STO' || opener.type === 'Sell';
+          if (isShort) {
+            roundTripProfit = ((opener.price - closer.price) * opener.quantity * mult) - totalFees;
+          } else {
+            roundTripProfit = ((closer.price - opener.price) * opener.quantity * mult) - totalFees;
+          }
+        }
+        opener.roundTripProfit = roundTripProfit;
+        closer.roundTripProfit = roundTripProfit;
+
+        // Holding duration
+        let days = 1;
+        if (opener.date && closer.date) {
+          try {
+            const d = differenceInDays(parseISO(closer.date), parseISO(opener.date));
+            if (!isNaN(d) && d > 0) days = d;
+          } catch {}
+        }
+        opener.holdingDays = days;
+        closer.holdingDays = days;
+      }
+    }
+
+    // 2. For any remaining unpaired openers, check if they expired
+    for (const opener of group.openers) {
+      if (opener.closingTrade) continue; // Already closed by a closer
+
+      const matchingExpiredEvent = group.expiredEvents.find(e => !e.linkedTradeId && e.quantity === opener.quantity)
+        || group.expiredEvents.find(e => !e.linkedTradeId)
+        || group.expiredEvents[0];
+
+      const isContractExpired = Boolean(matchingExpiredEvent) ||
+        Boolean(opener.details?.isExpired) ||
+        (opener.details?.daysLeft !== undefined && opener.details.daysLeft < 0) ||
+        Boolean(opener.details?.expirationDate && new Date(opener.details.expirationDate).getTime() < Date.now());
+
+      if (isContractExpired) {
+        opener.status = 'Closed';
+        opener.isExpiredTrade = true;
+        if (opener.details) opener.details.isExpired = true;
+        opener.closePrice = 0;
+        opener.closeDate = matchingExpiredEvent?.date || opener.details?.expirationDate || opener.date;
+        if (matchingExpiredEvent) {
+          matchingExpiredEvent.linkedTradeId = opener.id;
+          if (matchingExpiredEvent.fees) {
+            opener.fees = (opener.fees || 0) + matchingExpiredEvent.fees;
+          }
+        }
+
+        // Calculate holding duration up to expiration date
+        if (opener.date && opener.closeDate) {
+          try {
+            const d = differenceInDays(parseISO(opener.closeDate), parseISO(opener.date));
+            if (!isNaN(d) && d > 0) opener.holdingDays = d;
+          } catch {}
         }
       }
-      opener.roundTripProfit = roundTripProfit;
-      closer.roundTripProfit = roundTripProfit;
-
-      // Holding duration
-      let days = 1;
-      if (opener.date && closer.date) {
-        try {
-          const d = differenceInDays(parseISO(closer.date), parseISO(opener.date));
-          if (!isNaN(d) && d > 0) days = d;
-        } catch {}
-      }
-      opener.holdingDays = days;
-      closer.holdingDays = days;
     }
   }
 
-  return trades;
+  // Eliminate standalone EXPIRED rows so they don't form redundant/phantom strategies
+  return trades.filter(t => t.details?.action !== 'EXPIRED');
 };
 
 
@@ -1140,11 +1179,11 @@ export default function App() {
       // P/L for trades that were closed (BTC/STC) but whose option hasn't
       // expired yet (the opener would otherwise stay marked "Open" and get
       // a bogus 5% flat-estimate P/L instead of using the real close price).
-      pairOpenAndClosingTrades(allTrades);
-      setTrades(allTrades);
+      const pairedTrades = pairOpenAndClosingTrades(allTrades);
+      setTrades(pairedTrades);
       setPositions(allPositions);
-      if (allTrades.length > 0 && !activeTradeId) {
-        setActiveTradeId(allTrades[0].id);
+      if (pairedTrades.length > 0 && !activeTradeId) {
+        setActiveTradeId(pairedTrades[0].id);
       }
       // Only stamp a successful sync, so the header never claims fresh data
       // after a failed fetch.
@@ -2728,6 +2767,12 @@ export default function App() {
                               </button>
                             </div>
                           )}
+                          {activeTrade.isExpiredTrade && (
+                            <div className="mt-2.5 pt-2 border-t border-border flex items-center justify-between text-[11px]">
+                              <span className="text-amber-400 font-medium">Expired on {activeTrade.closeDate ? formatTradeDateTime(activeTrade.closeDate) : (activeTrade.details?.expirationFormatted || 'Expiration')}</span>
+                              <span className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">Expired Worthless</span>
+                            </div>
+                          )}
                         </div>
                       )}
 
@@ -2977,8 +3022,8 @@ export default function App() {
                           <>
                             <div className="flex justify-between">
                               <span className="text-muted-foreground font-sans">Status:</span>
-                              <span className={activeTrade.status === 'Open' ? 'text-profit font-bold' : 'text-muted-foreground font-semibold'}>
-                                {activeTrade.status === 'Open' ? 'Open Active Position' : 'Closed Trade'}
+                              <span className={activeTrade.status === 'Open' ? 'text-profit font-bold' : activeTrade.isExpiredTrade ? 'text-amber-400 font-semibold' : 'text-muted-foreground font-semibold'}>
+                                {activeTrade.status === 'Open' ? 'Open Active Position' : activeTrade.isExpiredTrade ? 'Closed & Expired' : 'Closed Trade'}
                               </span>
                             </div>
                             <div className="flex justify-between">

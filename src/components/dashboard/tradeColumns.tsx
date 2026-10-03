@@ -169,6 +169,11 @@ export function buildTradeColumns(
               CLOSE
             </span>
           )}
+          {(trade.isExpiredTrade || (!trade.closingTrade && !trade.isClosingLeg && trade.status === 'Closed' && trade.details?.isOption)) && (
+            <span className="rounded bg-amber-500/15 px-1 py-0.5 font-mono text-[9px] font-bold text-amber-400 ring-1 ring-amber-500/30" title="Option expired worthless">
+              EXPIRED
+            </span>
+          )}
           {mode === 'flat' && trade.status === 'Open' && (
             <span className="rounded bg-profit/20 px-1.5 py-0.5 text-[9px] font-bold text-profit ring-1 ring-profit/40">
               OPEN
@@ -267,10 +272,16 @@ export function buildTradeColumns(
                 className={
                   trade.status === 'Open'
                     ? 'rounded bg-profit/10 px-1.5 py-0.5 text-[9px] font-semibold text-profit ring-1 ring-profit/20'
-                    : 'rounded bg-surface-3 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground ring-1 ring-border'
+                    : (trade.isExpiredTrade || (!trade.closingTrade && !trade.isClosingLeg && trade.status === 'Closed' && trade.details?.isOption))
+                      ? 'rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold text-amber-400 ring-1 ring-amber-500/25'
+                      : 'rounded bg-surface-3 px-1.5 py-0.5 text-[9px] font-semibold text-muted-foreground ring-1 ring-border'
                 }
               >
-                {trade.status === 'Open' ? 'Open' : 'Realized'}
+                {trade.status === 'Open'
+                  ? 'Open'
+                  : (trade.isExpiredTrade || (!trade.closingTrade && !trade.isClosingLeg && trade.status === 'Closed' && trade.details?.isOption))
+                    ? 'Expired'
+                    : 'Realized'}
               </span>
             </div>
             {trade.fees ? (

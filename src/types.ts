@@ -56,6 +56,7 @@ export interface Trade {
   openingTrade?: Trade;
   isOpeningLeg?: boolean;
   isClosingLeg?: boolean;
+  isExpiredTrade?: boolean;
   roundTripProfit?: number;
   roundTripFees?: number;
   holdingDays?: number;

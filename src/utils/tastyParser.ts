@@ -964,10 +964,14 @@ export function groupItemsByTastyStrategy<T extends {
 }>(items: T[], calculateMetrics?: (item: T) => { profit?: number; avgROI?: number } | null): UnderlyingGroup<T>[] {
   if (!items || items.length === 0) return [];
 
+  // Filter out standalone EXPIRED transaction rows to prevent phantom strategies
+  const validItems = items.filter(item => item.details?.action !== 'EXPIRED');
+  if (validItems.length === 0) return [];
+
   // Step 1: Group items by Underlying (e.g. /MNQU6, /MESU6, TSLA, NVDA)
   const byUnderlying: Record<string, T[]> = {};
 
-  for (const item of items) {
+  for (const item of validItems) {
     const sym = item.details?.fullSymbol || item.details?.rootSymbol || item.symbol || 'UNKNOWN';
     if (!byUnderlying[sym]) {
       byUnderlying[sym] = [];
