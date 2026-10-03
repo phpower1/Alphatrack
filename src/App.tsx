@@ -81,6 +81,7 @@ import { decodeTradePayload, createSyntheticTradeFromPayload, SyntheticShareData
 
 // Local / Firestore persistence helpers for Tastytrade session
 const TASTY_STORAGE_KEY = 'alphatrack_tastytrade_session';
+const SELECTED_ACCOUNT_STORAGE_KEY = 'alphatrack_selected_account_id';
 
 interface StoredTastytradeSession {
   login: string;
@@ -300,7 +301,36 @@ export default function App() {
 
   // Accounts & Data
   const [accounts, setAccounts] = useState<SnapTradeAccount[]>([]);
-  const [selectedAccountId, setSelectedAccountId] = useState<string>('ALL'); // 'ALL' or specific accountId
+  const [selectedAccountId, setSelectedAccountId] = useState<string>(() => {
+    try {
+      return localStorage.getItem(SELECTED_ACCOUNT_STORAGE_KEY) || 'ALL';
+    } catch {
+      return 'ALL';
+    }
+  });
+
+  const handleSelectAccount = useCallback((accId: string) => {
+    setSelectedAccountId(accId);
+    try {
+      localStorage.setItem(SELECTED_ACCOUNT_STORAGE_KEY, accId);
+    } catch (e) {
+      console.warn('Failed to persist selected account to localStorage:', e);
+    }
+  }, []);
+
+  // If a saved account ID no longer exists among linked accounts, fall back gracefully to 'ALL'
+  useEffect(() => {
+    if (selectedAccountId !== 'ALL' && accounts.length > 0) {
+      const exists = accounts.some(a => a.id === selectedAccountId);
+      if (!exists) {
+        setSelectedAccountId('ALL');
+        try {
+          localStorage.setItem(SELECTED_ACCOUNT_STORAGE_KEY, 'ALL');
+        } catch {}
+      }
+    }
+  }, [accounts, selectedAccountId]);
+
   const [trades, setTrades] = useState<Trade[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [connections, setConnections] = useState<BrokerageConnection[]>([]);
@@ -2053,6 +2083,10 @@ export default function App() {
   /** Leave guest mode and return to the login screen. */
   const handleExitGuestMode = () => {
     setIsGuestMode(false);
+    setSelectedAccountId('ALL');
+    try {
+      localStorage.removeItem(SELECTED_ACCOUNT_STORAGE_KEY);
+    } catch {}
     setAccounts([]);
     setTrades([]);
     setPositions([]);
@@ -2166,7 +2200,7 @@ export default function App() {
         isGuestMode={isGuestMode}
         accounts={accounts}
         selectedAccountId={selectedAccountId}
-        onSelectAccount={setSelectedAccountId}
+        onSelectAccount={handleSelectAccount}
         connections={connections}
         tastyConnected={tastyConnected}
         dbError={dbError}
