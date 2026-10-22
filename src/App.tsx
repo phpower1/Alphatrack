@@ -1524,40 +1524,57 @@ export default function App() {
       }
 
       let days = 1;
-      // 1. If trade has closeDate and date, and closeDate != date:
-      if (trade.closeDate && trade.date && trade.closeDate !== trade.date) {
+      const isPairedLeg = Boolean(trade.closingTrade || trade.openingTrade || trade.isOpeningLeg || trade.isClosingLeg);
+      const isExpired = Boolean(trade.isExpiredTrade || trade.details?.isExpired);
+
+      // 0. Source of truth: holding duration computed during round-trip pairing / expiration matching
+      if (trade.holdingDays && trade.holdingDays > 0) {
+        days = trade.holdingDays;
+      } else if (isPairedLeg) {
+        // Paired legs: measure opener date -> closer date directly
+        const openDate = trade.openingTrade?.date || trade.date;
+        const closeDate = trade.closingTrade?.date || trade.closeDate || trade.date;
         try {
-          const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
+          const d = differenceInDays(parseISO(closeDate), parseISO(openDate));
           if (!isNaN(d) && d > 0) days = d;
         } catch {}
-      }
-
-      // 2. If days is still 1, look for matching trades in `trades` with same symbol & strike & expiration
-      if (days === 1 && trades && trades.length > 0) {
-        const related = trades.filter(t => 
-          (t.symbol === trade.symbol || t.details?.fullSymbol === trade.details?.fullSymbol) && 
-          t.details?.expirationDate === trade.details?.expirationDate &&
-          t.details?.strike === trade.details?.strike
-        );
-        if (related.length > 1) {
-          const tDates = related.map(t => new Date(t.date).getTime()).filter(t => !isNaN(t));
-          if (tDates.length > 1) {
-            const minT = Math.min(...tDates);
-            const maxT = Math.max(...tDates);
-            const d = differenceInDays(new Date(maxT), new Date(minT));
+      } else {
+        // 1. If trade has closeDate and date, and closeDate != date:
+        if (trade.closeDate && trade.date && trade.closeDate !== trade.date) {
+          try {
+            const d = differenceInDays(parseISO(trade.closeDate), parseISO(trade.date));
             if (!isNaN(d) && d > 0) days = d;
+          } catch {}
+        }
+
+        // 2. If days is still 1, look for matching trades in `trades` with same symbol & strike & expiration
+        if (days === 1 && trades && trades.length > 0) {
+          const related = trades.filter(t => 
+            (t.symbol === trade.symbol || t.details?.fullSymbol === trade.details?.fullSymbol) && 
+            t.details?.expirationDate === trade.details?.expirationDate &&
+            t.details?.strike === trade.details?.strike
+          );
+          if (related.length > 1) {
+            const tDates = related.map(t => new Date(t.date).getTime()).filter(t => !isNaN(t));
+            if (tDates.length > 1) {
+              const minT = Math.min(...tDates);
+              const maxT = Math.max(...tDates);
+              const d = differenceInDays(new Date(maxT), new Date(minT));
+              if (!isNaN(d) && d > 0) days = d;
+            }
           }
         }
-      }
 
-      // 3. Fallback: if it expired, compute days between trade entry and expirationDate
-      if (days === 1 && (!trade.closeDate || trade.closeDate === trade.date) && trade.details?.expirationDate && trade.date) {
-        try {
-          const expDate = parseISO(trade.details.expirationDate);
-          const trDate = parseISO(trade.date);
-          const d = differenceInDays(expDate, trDate);
-          if (!isNaN(d) && d > 0) days = d;
-        } catch {}
+        // 3. Fallback: ONLY for legs that actually expired — entry date to expiration date.
+        // Legs closed early (e.g., bought back the same day) must never use the expiration date.
+        if (days === 1 && isExpired && trade.details?.expirationDate && trade.date) {
+          try {
+            const expDate = parseISO(trade.details.expirationDate);
+            const trDate = parseISO(trade.date);
+            const d = differenceInDays(expDate, trDate);
+            if (!isNaN(d) && d > 0) days = d;
+          } catch {}
+        }
       }
 
       daysHeld = Math.max(1, days);
@@ -1966,7 +1983,8 @@ export default function App() {
             stratDaysHeld = spanExp;
           }
         } catch {}
-      } else if (strategy.dte !== undefined && strategy.daysLeft !== undefined) {
+      } else if (hasOpenLeg && strategy.dte !== undefined && strategy.daysLeft !== undefined) {
+        // Only for open strategies — for closed ones this measures entry -> today, not the real holding period.
         const spanDte = strategy.dte - Math.max(0, strategy.daysLeft);
         if (spanDte > 0) stratDaysHeld = spanDte;
       }
