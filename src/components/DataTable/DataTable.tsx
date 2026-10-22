@@ -37,8 +37,48 @@ export function DataTable<Row extends { id: string }>({
   skeletonRows = 8,
   caption,
   className,
+  sort: controlledSort,
+  onSortChange,
+  storageKey,
 }: DataTableProps<Row>) {
-  const [sort, setSort] = useState<SortState | null>(null);
+  const [internalSort, setInternalSort] = useState<SortState | null>(() => {
+    if (storageKey) {
+      try {
+        const saved = localStorage.getItem(storageKey);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (
+            parsed &&
+            typeof parsed.columnId === 'string' &&
+            (parsed.direction === 'asc' || parsed.direction === 'desc')
+          ) {
+            return parsed;
+          }
+        }
+      } catch {}
+    }
+    return null;
+  });
+
+  const sort = controlledSort !== undefined ? controlledSort : internalSort;
+
+  const handleSortChange = (next: SortState | null) => {
+    if (onSortChange) {
+      onSortChange(next);
+    }
+    if (controlledSort === undefined) {
+      setInternalSort(next);
+      if (storageKey) {
+        try {
+          if (next) {
+            localStorage.setItem(storageKey, JSON.stringify(next));
+          } else {
+            localStorage.removeItem(storageKey);
+          }
+        } catch {}
+      }
+    }
+  };
 
   const isGrouped = Array.isArray(groups);
 
@@ -159,11 +199,13 @@ export function DataTable<Row extends { id: string }>({
   const toggleSort = (column: ColumnDef<Row>) => {
     if (!column.sortable) return;
     if (!column.sortValue && !column.sortUnderlying && !column.sortStrategy) return;
-    setSort((prev) => {
-      if (prev?.columnId !== column.id) return { columnId: column.id, direction: 'desc' };
-      if (prev.direction === 'desc') return { columnId: column.id, direction: 'asc' };
-      return null; // third click clears the sort
-    });
+    const next: SortState | null =
+      sort?.columnId !== column.id
+        ? { columnId: column.id, direction: 'desc' }
+        : sort.direction === 'desc'
+          ? { columnId: column.id, direction: 'asc' }
+          : null;
+    handleSortChange(next);
   };
 
   const colCount = columns.length;

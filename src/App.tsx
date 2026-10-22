@@ -63,6 +63,7 @@ import type {
 export type { SnapTradeAccount, Trade, Position, BrokerageConnection };
 
 import { DataTable } from './components/DataTable/DataTable';
+import type { SortState } from './components/DataTable/types';
 import { buildTradeColumns } from './components/dashboard/tradeColumns';
 import { buildPositionColumns } from './components/dashboard/positionColumns';
 import { EmptyState } from './components/EmptyState';
@@ -86,6 +87,8 @@ const ACTIVE_TAB_STORAGE_KEY = 'alphatrack_active_tab';
 const GROUP_BY_STORAGE_KEY = 'alphatrack_group_by';
 const STATUS_FILTER_STORAGE_KEY = 'alphatrack_status_filter';
 const PERIOD_FILTER_STORAGE_KEY = 'alphatrack_period_filter';
+const TRADES_SORT_STORAGE_KEY = 'alphatrack_trades_sort';
+const POSITIONS_SORT_STORAGE_KEY = 'alphatrack_positions_sort';
 
 interface StoredTastytradeSession {
   login: string;
@@ -396,6 +399,60 @@ export default function App() {
       localStorage.setItem(PERIOD_FILTER_STORAGE_KEY, periodFilter);
     } catch {}
   }, [periodFilter]);
+
+  const [tradesSort, setTradesSort] = useState<SortState | null>(() => {
+    try {
+      const saved = localStorage.getItem(TRADES_SORT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (
+          parsed &&
+          typeof parsed.columnId === 'string' &&
+          (parsed.direction === 'asc' || parsed.direction === 'desc')
+        ) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+
+  const [positionsSort, setPositionsSort] = useState<SortState | null>(() => {
+    try {
+      const saved = localStorage.getItem(POSITIONS_SORT_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (
+          parsed &&
+          typeof parsed.columnId === 'string' &&
+          (parsed.direction === 'asc' || parsed.direction === 'desc')
+        ) {
+          return parsed;
+        }
+      }
+    } catch {}
+    return null;
+  });
+
+  useEffect(() => {
+    try {
+      if (tradesSort) {
+        localStorage.setItem(TRADES_SORT_STORAGE_KEY, JSON.stringify(tradesSort));
+      } else {
+        localStorage.removeItem(TRADES_SORT_STORAGE_KEY);
+      }
+    } catch {}
+  }, [tradesSort]);
+
+  useEffect(() => {
+    try {
+      if (positionsSort) {
+        localStorage.setItem(POSITIONS_SORT_STORAGE_KEY, JSON.stringify(positionsSort));
+      } else {
+        localStorage.removeItem(POSITIONS_SORT_STORAGE_KEY);
+      }
+    } catch {}
+  }, [positionsSort]);
   const [collapsedUnderlyings, setCollapsedUnderlyings] = useState<Record<string, boolean>>({});
   const [collapsedStrategies, setCollapsedStrategies] = useState<Record<string, boolean>>({});
   const [searchFilter, setSearchFilter] = useState('');
@@ -2569,6 +2626,8 @@ export default function App() {
                     collapse={collapseState}
                     selectedId={activeTradeId}
                     onSelect={handleSelectRow}
+                    sort={tradesSort}
+                    onSortChange={setTradesSort}
                     loading={loading}
                     className="min-h-0 flex-1"
                     empty={
@@ -2610,6 +2669,8 @@ export default function App() {
                     collapse={collapseState}
                     selectedId={activeTradeId}
                     onSelect={handleSelectRow}
+                    sort={positionsSort}
+                    onSortChange={setPositionsSort}
                     loading={loading}
                     className="min-h-0 flex-1"
                     empty={

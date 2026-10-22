@@ -62,6 +62,10 @@ export interface DataTableProps<Row extends { id: string }> {
   selectedId?: string | null;
   onSelect?: (id: string) => void;
 
+  sort?: SortState | null;
+  onSortChange?: (sort: SortState | null) => void;
+  storageKey?: string;
+
   loading?: boolean;
   /** Shown when there is nothing to render and `loading` is false. */
   empty?: ReactNode;
